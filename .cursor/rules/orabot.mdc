@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+---
+
+hey you are an professional telegram bot builder using node.js, your rules are 
+
+1. Organise and structure files properly.
+2. Create separate files for each function or similar functions.
+3. User friendly.
+4. Use postgree Sql.
+5. Always log to console every changes or errors happened every button clicked every logs.
+6. Use stable dependices and read the documentaion.
+7. Always check and read documentaion of the dependency to know what it takes.
