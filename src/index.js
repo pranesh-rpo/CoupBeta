@@ -164,6 +164,9 @@ import {
   handleTemplateSelect,
   handleTemplateClear,
   handleApplyTags,
+  handlePremium,
+  handlePremiumFAQ,
+  handlePremiumBenefits,
   handleLoginWeb,
   handleLoginSharePhone,
   handleSharePhoneConfirm,
@@ -1378,6 +1381,12 @@ bot.on('callback_query', async (callbackQuery) => {
       await handleVerifyChannel(bot, callbackQuery);
     } else if (data === 'btn_apply_tags') {
       await handleApplyTags(bot, callbackQuery);
+    } else if (data === 'btn_premium') {
+      await handlePremium(bot, callbackQuery);
+    } else if (data === 'premium_faq') {
+      await handlePremiumFAQ(bot, callbackQuery);
+    } else if (data === 'premium_benefits') {
+      await handlePremiumBenefits(bot, callbackQuery);
     } else if (data === 'btn_groups') {
       await handleGroupsButton(bot, callbackQuery);
     } else if (data === 'btn_refresh_groups') {

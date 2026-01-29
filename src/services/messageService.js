@@ -13,11 +13,26 @@ class MessageService {
    * @param {number} accountId - Account ID
    * @param {string} messageText - Message text
    * @param {string} variant - 'A' or 'B' (default: 'A')
+   * @param {Array|null} messageEntities - Message entities (for premium emoji support)
    */
-  async saveMessage(accountId, messageText, variant = 'A') {
+  async saveMessage(accountId, messageText, variant = 'A', messageEntities = null) {
     try {
       if (!['A', 'B'].includes(variant)) {
         return { success: false, error: 'Invalid variant. Must be A or B' };
+      }
+
+      // Serialize entities if provided
+      let entitiesJson = null;
+      if (messageEntities && messageEntities.length > 0) {
+        entitiesJson = JSON.stringify(messageEntities.map(e => ({
+          type: e.type,
+          offset: e.offset,
+          length: e.length,
+          language: e.language,
+          url: e.url,
+          user: e.user,
+          custom_emoji_id: e.custom_emoji_id, // For premium emojis
+        })));
       }
 
       // Deactivate existing messages for this variant
@@ -30,9 +45,9 @@ class MessageService {
 
       // Insert new active message
       await db.query(
-        `INSERT INTO messages (account_id, message_text, variant, is_active, created_at, updated_at)
-         VALUES ($1, $2, $3, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [accountId, messageText, variant]
+        `INSERT INTO messages (account_id, message_text, message_entities, variant, is_active, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [accountId, messageText, entitiesJson, variant]
       );
 
       logger.logChange('MESSAGE', accountId, `Message variant ${variant} saved`);
@@ -47,7 +62,7 @@ class MessageService {
    * Get active message for an account
    * @param {number} accountId - Account ID
    * @param {string} variant - 'A' or 'B' (optional, returns first active if not specified)
-   * @returns {Promise<string|null>}
+   * @returns {Promise<{text: string, entities: Array|null}|null>}
    */
   async getActiveMessage(accountId, variant = null) {
     try {
@@ -55,19 +70,27 @@ class MessageService {
       let params;
 
       if (variant) {
-        query = `SELECT message_text FROM messages 
+        query = `SELECT message_text, message_entities FROM messages 
                  WHERE account_id = $1 AND variant = $2 AND is_active = TRUE 
                  ORDER BY updated_at DESC LIMIT 1`;
         params = [accountId, variant];
       } else {
-        query = `SELECT message_text FROM messages 
+        query = `SELECT message_text, message_entities FROM messages 
                  WHERE account_id = $1 AND is_active = TRUE 
                  ORDER BY updated_at DESC LIMIT 1`;
         params = [accountId];
       }
 
       const result = await db.query(query, params);
-      return result.rows.length > 0 ? result.rows[0].message_text : null;
+      if (result.rows.length === 0) {
+        return null;
+      }
+
+      const row = result.rows[0];
+      return {
+        text: row.message_text,
+        entities: row.message_entities ? JSON.parse(row.message_entities) : null
+      };
     } catch (error) {
       logger.logError('MESSAGE', accountId, error, 'Failed to get active message');
       return null;
@@ -77,12 +100,12 @@ class MessageService {
   /**
    * Get both A and B messages for an account
    * @param {number} accountId - Account ID
-   * @returns {Promise<{messageA: string|null, messageB: string|null}>}
+   * @returns {Promise<{messageA: {text: string, entities: Array|null}|null, messageB: {text: string, entities: Array|null}|null}>}
    */
   async getABMessages(accountId) {
     try {
       const result = await db.query(
-        `SELECT variant, message_text FROM messages 
+        `SELECT variant, message_text, message_entities FROM messages 
          WHERE account_id = $1 AND is_active = TRUE 
          ORDER BY variant, updated_at DESC`,
         [accountId]
@@ -92,10 +115,15 @@ class MessageService {
       let messageB = null;
 
       for (const row of result.rows) {
+        const messageData = {
+          text: row.message_text,
+          entities: row.message_entities ? JSON.parse(row.message_entities) : null
+        };
+
         if (row.variant === 'A' && !messageA) {
-          messageA = row.message_text;
+          messageA = messageData;
         } else if (row.variant === 'B' && !messageB) {
-          messageB = row.message_text;
+          messageB = messageData;
         }
       }
 
@@ -113,7 +141,7 @@ class MessageService {
    * @param {string} abModeType - 'single', 'rotate', or 'split'
    * @param {string} abLastVariant - Last used variant (for rotate mode)
    * @param {number|null} savedTemplateSlot - Saved template slot (1, 2, 3, or null)
-   * @returns {Promise<string|null>}
+   * @returns {Promise<{text: string, entities: Array|null}|null>}
    */
   async selectMessageVariant(accountId, abMode, abModeType, abLastVariant, savedTemplateSlot = null) {
     try {

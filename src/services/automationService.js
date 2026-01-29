@@ -600,12 +600,25 @@ class AutomationService {
           const abModeType = settings?.abModeType || 'single';
           const abLastVariant = settings?.abLastVariant || 'A';
           
-          broadcastMessage = await messageService.selectMessageVariant(
+          const messageData = await messageService.selectMessageVariant(
             accountId,
             abMode,
             abModeType,
             abLastVariant
           );
+          
+          // Handle both old (string) and new (object) formats for backward compatibility
+          let messageEntities = null;
+          if (messageData === null) {
+            broadcastMessage = null;
+          } else if (typeof messageData === 'string') {
+            broadcastMessage = messageData;
+          } else if (messageData && typeof messageData === 'object') {
+            broadcastMessage = messageData.text || null;
+            messageEntities = messageData.entities || null;
+          } else {
+            broadcastMessage = null;
+          }
           
           // Validate message (check for empty/whitespace)
           if (broadcastMessage && typeof broadcastMessage === 'string' && broadcastMessage.trim().length === 0) {
@@ -626,6 +639,7 @@ class AutomationService {
         } catch (messageError) {
           logError(`[BROADCAST ERROR] Error getting message variant:`, messageError);
           broadcastMessage = null;
+          messageEntities = null;
         }
         
         if (!broadcastMessage && !useSavedTemplate) {
@@ -645,10 +659,17 @@ class AutomationService {
     const customIntervalMs = await this.getCustomInterval(accountId);
     const customIntervalMinutes = customIntervalMs / (60 * 1000);
     
+    // Extract entities from messageData if available
+    let messageEntities = null;
+    if (typeof messageData === 'object' && messageData !== null && messageData.entities) {
+      messageEntities = messageData.entities;
+    }
+    
     // broadcastKey is already declared above (line 66)
     const broadcastData = {
       isRunning: true,
       message: broadcastMessage,
+      messageEntities, // Store entities for premium emoji support
       useSavedTemplate,
       savedTemplateData,
       timeouts: [],
@@ -706,7 +727,7 @@ class AutomationService {
         return { success: false, error: 'No message or saved template available' };
       }
       
-      this.sendSingleMessageToAllGroups(userId, accountId, broadcastMessage, useSavedTemplate, savedTemplateData, true)
+      this.sendSingleMessageToAllGroups(userId, accountId, broadcastMessage, useSavedTemplate, savedTemplateData, true, messageEntities)
         .then(() => {
           console.log(`[BROADCAST] Initial message send completed for user ${userId}, account ${accountId}`);
         })
@@ -853,12 +874,25 @@ class AutomationService {
           const abModeType = settings?.abModeType || 'single';
           const abLastVariant = settings?.abLastVariant || 'A';
           
-          messageToSend = await messageService.selectMessageVariant(
+          const messageData = await messageService.selectMessageVariant(
             broadcast.accountId,
             abMode,
             abModeType,
             abLastVariant
           );
+          
+          // Handle both old (string) and new (object) formats for backward compatibility
+          let storedEntities = null;
+          if (messageData === null) {
+            messageToSend = null;
+          } else if (typeof messageData === 'string') {
+            messageToSend = messageData;
+          } else if (messageData && typeof messageData === 'object') {
+            messageToSend = messageData.text || null;
+            storedEntities = messageData.entities || null;
+          } else {
+            messageToSend = null;
+          }
           
           // Validate message (check for empty/whitespace)
           if (messageToSend && typeof messageToSend === 'string' && messageToSend.trim().length === 0) {
@@ -885,7 +919,7 @@ class AutomationService {
       // Send message if we have one (this may take time, but next cycle is already scheduled)
       if (useTemplate || (messageToSend && messageToSend.trim().length > 0)) {
         const sendStartTime = Date.now();
-        await this.sendSingleMessageToAllGroups(userId, broadcast.accountId, messageToSend, useTemplate, templateData);
+        await this.sendSingleMessageToAllGroups(userId, broadcast.accountId, messageToSend, useTemplate, templateData, false, storedEntities);
         const sendDuration = ((Date.now() - sendStartTime) / 1000 / 60).toFixed(2);
         console.log(`[BROADCAST] Cycle send completed for account ${accountId} in ${sendDuration} minutes`);
       } else {
@@ -1203,7 +1237,7 @@ class AutomationService {
     }
   }
 
-  async sendSingleMessageToAllGroups(userId, accountId, message, useSavedTemplate = false, savedTemplateData = null, bypassSchedule = false) {
+  async sendSingleMessageToAllGroups(userId, accountId, message, useSavedTemplate = false, savedTemplateData = null, bypassSchedule = false, messageEntities = null) {
     const broadcastKey = this._getBroadcastKey(userId, accountId);
     const broadcast = this.activeBroadcasts.get(broadcastKey);
     if (!broadcast || !broadcast.isRunning) {
@@ -1514,6 +1548,62 @@ class AutomationService {
             let messageToSend = message;
             let entities = [];
             
+            // Convert stored entities (from Bot API format) to GramJS format if available
+            if (messageEntities && messageEntities.length > 0) {
+              console.log(`[BROADCAST] Converting ${messageEntities.length} stored entities (premium emojis) to GramJS format`);
+              const { Api } = await import('telegram/tl/index.js');
+              
+              for (const entity of messageEntities) {
+                try {
+                  // Convert Bot API entity to GramJS entity
+                  if (entity.type === 'custom_emoji' && entity.custom_emoji_id) {
+                    // Premium emoji entity
+                    entities.push(new Api.MessageEntityCustomEmoji({
+                      offset: entity.offset,
+                      length: entity.length,
+                      documentId: BigInt(entity.custom_emoji_id)
+                    }));
+                    console.log(`[BROADCAST] Added premium emoji entity: custom_emoji_id=${entity.custom_emoji_id}, offset=${entity.offset}, length=${entity.length}`);
+                  } else if (entity.type === 'bold') {
+                    entities.push(new Api.MessageEntityBold({
+                      offset: entity.offset,
+                      length: entity.length
+                    }));
+                  } else if (entity.type === 'italic') {
+                    entities.push(new Api.MessageEntityItalic({
+                      offset: entity.offset,
+                      length: entity.length
+                    }));
+                  } else if (entity.type === 'code') {
+                    entities.push(new Api.MessageEntityCode({
+                      offset: entity.offset,
+                      length: entity.length
+                    }));
+                  } else if (entity.type === 'pre') {
+                    entities.push(new Api.MessageEntityPre({
+                      offset: entity.offset,
+                      length: entity.length,
+                      language: entity.language || ''
+                    }));
+                  } else if (entity.type === 'text_link' && entity.url) {
+                    entities.push(new Api.MessageEntityUrl({
+                      offset: entity.offset,
+                      length: entity.length
+                    }));
+                  } else if (entity.type === 'text_mention' && entity.user) {
+                    entities.push(new Api.MessageEntityMentionName({
+                      offset: entity.offset,
+                      length: entity.length,
+                      userId: BigInt(entity.user.id)
+                    }));
+                  }
+                  // Add more entity types as needed
+                } catch (entityError) {
+                  console.log(`[BROADCAST] Error converting entity: ${entityError.message}`);
+                }
+              }
+            }
+            
             // Add mentions if enabled
             if (autoMention) {
               console.log(`[BROADCAST] Auto-mention is ENABLED, attempting to add mentions...`);
@@ -1555,68 +1645,84 @@ class AutomationService {
                 
                 const mentionResult = await Promise.race([mentionPromise, timeoutPromise]);
                 messageToSend = mentionResult.message;
-                entities = mentionResult.entities || [];
-                console.log(`[BROADCAST] Added ${entities.length} mentions to message for group ${group.name}`);
+                // Merge mention entities with existing entities (premium emojis)
+                const mentionEntities = mentionResult.entities || [];
+                entities = [...entities, ...mentionEntities]; // Preserve premium emoji entities
+                console.log(`[BROADCAST] Added ${mentionEntities.length} mentions to message for group ${group.name} (total entities: ${entities.length})`);
               } catch (error) {
                 console.log(`[BROADCAST] Failed to add mentions (timeout or error), sending without mentions: ${error.message}`);
                 // Continue with original message if mention fails or times out
+                // Keep existing entities (premium emojis) even if mentions fail
                 messageToSend = message;
-                entities = [];
+                // Don't clear entities - they may contain premium emojis
               }
             } else {
               console.log(`[BROADCAST] Auto-mention is DISABLED for group ${group.name}`);
             }
             
-            // Send message with mentions using HTML parsing (BEST METHOD)
-            // GramJS supports HTML parsing which automatically converts <a href="tg://user?id=..."> to entities
-            // This is more reliable than manually creating entities
+            // Send message with entities (mentions or premium emojis)
+            // Check if we have mention entities (from auto-mention) or other entities (premium emojis)
+            // GramJS entities have className, Bot API entities have type
+            const hasMentionEntities = entities.some(e => 
+              (e.className === 'MessageEntityMentionName') || 
+              (e.userId !== undefined && e.userId !== null)
+            );
+            const hasOtherEntities = entities.some(e => 
+              !((e.className === 'MessageEntityMentionName') || 
+                (e.userId !== undefined && e.userId !== null))
+            );
+            
             if (entities.length > 0) {
               try {
-                console.log(`[BROADCAST] Creating HTML-formatted message with ${entities.length} hidden mentions`);
-                
-                // Build HTML message with hidden mentions
-                // Format: <a href="tg://user?id=USER_ID">&#8203;</a> where &#8203; is zero-width space
-                // We need to work backwards to maintain correct offsets when replacing
-                let htmlMessage = messageToSend;
-                
-                // Sort entities by offset descending (work backwards to preserve offsets)
-                const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-                
-                for (const entity of sortedEntities) {
-                  const userIdValue = typeof entity.userId === 'bigint' ? Number(entity.userId) : 
-                                    typeof entity.userId === 'number' ? entity.userId : 
-                                    parseInt(entity.userId);
-                  
-                  if (isNaN(userIdValue)) {
-                    console.log(`[BROADCAST] Invalid userId: ${entity.userId}, skipping`);
-                    continue;
-                  }
-                  
-                  // Replace the zero-width space at this offset with HTML anchor tag
-                  // Working backwards ensures offsets remain correct
-                  const before = htmlMessage.substring(0, entity.offset);
-                  const mentionChar = htmlMessage.substring(entity.offset, entity.offset + entity.length);
-                  const after = htmlMessage.substring(entity.offset + entity.length);
-                  
-                  // Create HTML anchor with zero-width space (U+200B) for truly hidden mentions
-                  // Using &#8203; (zero-width space) instead of &#8204; (zero-width non-joiner)
-                  // Zero-width space is more reliably invisible and doesn't render as a dot
-                  const htmlMention = `<a href="tg://user?id=${userIdValue}">&#8203;</a>`;
-                  
-                  htmlMessage = before + htmlMention + after;
-                  console.log(`[BROADCAST] ✅ Added HTML mention for userId ${userIdValue} at offset ${entity.offset}`);
+                // Validate group entity before sending
+                if (!group.entity) {
+                  throw new Error('Group entity is missing');
                 }
                 
-                // Send message with HTML parsing mode
-                // GramJS will automatically parse the HTML and create the entities
-                console.log(`[BROADCAST] Sending message with HTML parsing mode for hidden mentions`);
-                console.log(`[BROADCAST] HTML message length: ${htmlMessage.length}`);
-                
-                try {
-                  // Validate group entity before sending
-                  if (!group.entity) {
-                    throw new Error('Group entity is missing');
+                // If we have both mention entities and other entities (premium emojis), use direct entity sending
+                // If we only have mention entities, use HTML parsing (better for mentions)
+                // If we only have other entities (premium emojis), use direct entity sending
+                if (hasMentionEntities && !hasOtherEntities) {
+                  // Only mentions, use HTML parsing
+                  console.log(`[BROADCAST] Creating HTML-formatted message with ${entities.length} hidden mentions`);
+                  
+                  // Build HTML message with hidden mentions
+                  // Format: <a href="tg://user?id=USER_ID">&#8203;</a> where &#8203; is zero-width space
+                  // We need to work backwards to maintain correct offsets when replacing
+                  let htmlMessage = messageToSend;
+                  
+                  // Sort entities by offset descending (work backwards to preserve offsets)
+                  const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+                  
+                  for (const entity of sortedEntities) {
+                    const userIdValue = typeof entity.userId === 'bigint' ? Number(entity.userId) : 
+                                      typeof entity.userId === 'number' ? entity.userId : 
+                                      parseInt(entity.userId);
+                    
+                    if (isNaN(userIdValue)) {
+                      console.log(`[BROADCAST] Invalid userId: ${entity.userId}, skipping`);
+                      continue;
+                    }
+                    
+                    // Replace the zero-width space at this offset with HTML anchor tag
+                    // Working backwards ensures offsets remain correct
+                    const before = htmlMessage.substring(0, entity.offset);
+                    const mentionChar = htmlMessage.substring(entity.offset, entity.offset + entity.length);
+                    const after = htmlMessage.substring(entity.offset + entity.length);
+                    
+                    // Create HTML anchor with zero-width space (U+200B) for truly hidden mentions
+                    // Using &#8203; (zero-width space) instead of &#8204; (zero-width non-joiner)
+                    // Zero-width space is more reliably invisible and doesn't render as a dot
+                    const htmlMention = `<a href="tg://user?id=${userIdValue}">&#8203;</a>`;
+                    
+                    htmlMessage = before + htmlMention + after;
+                    console.log(`[BROADCAST] ✅ Added HTML mention for userId ${userIdValue} at offset ${entity.offset}`);
                   }
+                  
+                  // Send message with HTML parsing mode
+                  // GramJS will automatically parse the HTML and create the entities
+                  console.log(`[BROADCAST] Sending message with HTML parsing mode for hidden mentions`);
+                  console.log(`[BROADCAST] HTML message length: ${htmlMessage.length}`);
                   
                   const result = await client.sendMessage(group.entity, { 
                     message: htmlMessage,
@@ -1645,34 +1751,42 @@ class AutomationService {
                     console.log(`[BROADCAST]   3. Group permissions restrict mentions`);
                     console.log(`[BROADCAST]   4. tg://user?id= may not work in groups via MTProto`);
                   }
-                } catch (sendError) {
-                  console.log(`[BROADCAST] Error sending message with HTML: ${sendError?.message || 'Unknown error'}`);
-                  console.log(`[BROADCAST] Send error details:`, sendError);
-                  // Fallback: send without mentions
-                  console.log(`[BROADCAST] Falling back to sending without mentions`);
-                  try {
-                    if (group.entity && messageToSend && messageToSend.trim().length > 0) {
-                      await client.sendMessage(group.entity, { message: messageToSend });
-                    } else {
-                      throw new Error('Cannot fallback: missing entity or message');
-                    }
-                  } catch (fallbackError) {
-                    console.log(`[BROADCAST] Fallback send also failed: ${fallbackError?.message || 'Unknown error'}`);
-                    throw fallbackError; // Re-throw to be handled by outer error handler
+                } else {
+                  // Send message with direct entities (for premium emojis and/or when we have both mentions and premium emojis)
+                  const entityTypes = entities.map(e => e.className || e.constructor?.name || 'Unknown').join(', ');
+                  console.log(`[BROADCAST] Sending message with ${entities.length} direct entities (types: ${entityTypes})`);
+                  
+                  const result = await client.sendMessage(group.entity, {
+                    message: messageToSend,
+                    entities: entities
+                  });
+                  
+                  console.log(`[BROADCAST] Message sent successfully with entities. Message ID: ${result?.id || 'unknown'}`);
+                  
+                  // Check if entities were actually included in the sent message
+                  const resultEntities = result?.entities || result?._entities || [];
+                  if (resultEntities.length > 0) {
+                    console.log(`[BROADCAST] ✅ Entities confirmed in sent message: ${resultEntities.length} entities`);
+                    resultEntities.forEach((ent, idx) => {
+                      console.log(`[BROADCAST] Entity ${idx}: ${ent?.className || ent?.constructor?.name || 'Unknown'}, offset=${ent?.offset || 'N/A'}, length=${ent?.length || 'N/A'}`);
+                    });
+                  } else {
+                    console.log(`[BROADCAST] ⚠️ WARNING: No entities found in sent message result!`);
                   }
                 }
-              } catch (htmlError) {
-                console.log(`[BROADCAST] Error creating HTML message: ${htmlError?.message || 'Unknown error'}`);
-                console.log(`[BROADCAST] HTML error details:`, htmlError);
-                // Fallback: send without mentions
+              } catch (sendError) {
+                console.log(`[BROADCAST] Error sending message with entities: ${sendError?.message || 'Unknown error'}`);
+                console.log(`[BROADCAST] Send error details:`, sendError);
+                // Fallback: send without entities
+                console.log(`[BROADCAST] Falling back to sending without entities`);
                 try {
                   if (group.entity && messageToSend && messageToSend.trim().length > 0) {
                     await client.sendMessage(group.entity, { message: messageToSend });
                   } else {
-                    throw new Error('Cannot send: missing entity or message');
+                    throw new Error('Cannot fallback: missing entity or message');
                   }
                 } catch (fallbackError) {
-                  console.log(`[BROADCAST] Fallback send failed: ${fallbackError?.message || 'Unknown error'}`);
+                  console.log(`[BROADCAST] Fallback send also failed: ${fallbackError?.message || 'Unknown error'}`);
                   throw fallbackError; // Re-throw to be handled by outer error handler
                 }
               }

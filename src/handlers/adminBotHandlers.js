@@ -8,6 +8,7 @@ import { config } from '../config.js';
 import db from '../database/db.js';
 import accountLinker from '../services/accountLinker.js';
 import automationService from '../services/automationService.js';
+import premiumService from '../services/premiumService.js';
 import logger from '../utils/logger.js';
 import adminNotifier from '../services/adminNotifier.js';
 import { isFloodWaitError, extractWaitTime, waitForFloodError, safeBotApiCall } from '../utils/floodWaitHandler.js';
@@ -1287,6 +1288,245 @@ function registerAdminCommands(bot) {
       await bot.sendMessage(msg.chat.id, `✅ Admin bot is working! Your ID: ${msg.from.id}\nIs Admin: ${isAdmin(msg.from.id)}`);
     } catch (error) {
       console.error('[ADMIN BOT] Error in /test:', error);
+    }
+  });
+
+  // Premium subscription commands
+  bot.onText(/\/premium_stats/, async (msg) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const stats = await premiumService.getStatistics();
+      const message = `╔═══════════════════════════╗
+║  ⭐ <b>PREMIUM STATISTICS</b>   ║
+╚═══════════════════════════╝
+
+┌───────────────────────────┐
+│  📊 <b>Subscription Status</b>  │
+└───────────────────────────┘
+
+✅ <b>Active:</b> <code>${stats.active}</code>
+❌ <b>Expired:</b> <code>${stats.expired}</code>
+🚫 <b>Cancelled:</b> <code>${stats.cancelled}</code>
+
+┌───────────────────────────┐
+│  💰 <b>Revenue</b>            │
+└───────────────────────────┘
+
+<b>Total Revenue:</b> ₹${stats.totalRevenue.toFixed(2)}
+<b>Average per Active:</b> ₹${stats.active > 0 ? (stats.totalRevenue / stats.active).toFixed(2) : '0.00'}`;
+
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  bot.onText(/\/premium_list/, async (msg) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const subscriptions = await premiumService.getAllActiveSubscriptions();
+      
+      if (subscriptions.length === 0) {
+        await bot.sendMessage(msg.chat.id, '📭 No active premium subscriptions found.');
+        return;
+      }
+
+      let message = `╔═══════════════════════════╗
+║  ⭐ <b>ACTIVE PREMIUM</b>      ║
+║  <b>(${subscriptions.length} subscriptions)</b>  ║
+╚═══════════════════════════╝\n\n`;
+      
+      subscriptions.slice(0, 15).forEach((sub, index) => {
+        const expiresAt = new Date(sub.expires_at);
+        const daysRemaining = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
+        const statusEmoji = daysRemaining <= 7 ? '⚠️' : daysRemaining <= 15 ? '🟡' : '🟢';
+        
+        message += `┌─ <b>#${index + 1}</b> ───────────────────┐\n`;
+        message += `│ ${statusEmoji} <b>${sub.first_name || 'N/A'}</b>\n`;
+        message += `│ 👤 @${sub.username || 'no_username'}\n`;
+        message += `│ 🆔 <code>${sub.user_id}</code>\n`;
+        message += `│ 📅 Expires: ${expiresAt.toLocaleDateString('en-IN')}\n`;
+        message += `│ ⏰ ${daysRemaining} days remaining\n`;
+        message += `│ 💰 ₹${sub.amount}\n`;
+        message += `└────────────────────────────┘\n\n`;
+      });
+
+      if (subscriptions.length > 15) {
+        message += `\n<i>... and ${subscriptions.length - 15} more subscriptions</i>`;
+      }
+
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  bot.onText(/\/premium_expiring/, async (msg) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const subscriptions = await premiumService.getExpiringSubscriptions();
+      
+      if (subscriptions.length === 0) {
+        await bot.sendMessage(msg.chat.id, '✅ No subscriptions expiring in the next 7 days.');
+        return;
+      }
+
+      let message = `╔═══════════════════════════╗
+║  ⚠️ <b>EXPIRING SOON</b>       ║
+║  <b>(${subscriptions.length} subscriptions)</b>  ║
+╚═══════════════════════════╝\n\n`;
+      
+      subscriptions.forEach((sub, index) => {
+        const expiresAt = new Date(sub.expires_at);
+        const daysRemaining = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
+        const urgencyEmoji = daysRemaining <= 1 ? '🔴' : daysRemaining <= 3 ? '🟠' : '🟡';
+        
+        message += `┌─ <b>#${index + 1}</b> ───────────────────┐\n`;
+        message += `│ ${urgencyEmoji} <b>${sub.first_name || 'N/A'}</b>\n`;
+        message += `│ 👤 @${sub.username || 'no_username'}\n`;
+        message += `│ 🆔 <code>${sub.user_id}</code>\n`;
+        message += `│ 📅 ${expiresAt.toLocaleDateString('en-IN')}\n`;
+        message += `│ ⏰ <b>${daysRemaining} days left</b>\n`;
+        message += `└────────────────────────────┘\n\n`;
+      });
+
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  bot.onText(/\/premium_user (.+)/, async (msg, match) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const targetUserId = validateUserId(match[1]);
+      if (!targetUserId) {
+        await bot.sendMessage(msg.chat.id, '❌ Invalid user ID format');
+        return;
+      }
+
+      const subscription = await premiumService.getSubscription(targetUserId);
+      const isPremium = await premiumService.isPremium(targetUserId);
+
+      let message = `╔═══════════════════════════╗
+║  👤 <b>USER PREMIUM STATUS</b>  ║
+║  <b>ID: ${targetUserId}</b>        ║
+╚═══════════════════════════╝\n\n`;
+      
+      if (isPremium && subscription) {
+        const expiresAt = new Date(subscription.expires_at);
+        const daysRemaining = subscription.daysRemaining || 0;
+        const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
+          day: 'numeric', 
+          month: 'long', 
+          year: 'numeric' 
+        });
+        
+        message += `┌───────────────────────────┐\n`;
+        message += `│  ✅ <b>ACTIVE PREMIUM</b>     │\n`;
+        message += `└───────────────────────────┘\n\n`;
+        message += `📅 <b>Expires:</b> ${expiresAtFormatted}\n`;
+        message += `⏰ <b>Days Remaining:</b> <code>${daysRemaining}</code>\n`;
+        message += `💰 <b>Amount:</b> ₹${subscription.amount}\n`;
+        message += `💳 <b>Payment:</b> ${subscription.payment_method || 'N/A'}\n`;
+        if (subscription.payment_reference) {
+          message += `📝 <b>Reference:</b> <code>${subscription.payment_reference}</code>\n`;
+        }
+      } else {
+        message += `┌───────────────────────────┐\n`;
+        message += `│  ❌ <b>NOT PREMIUM</b>        │\n`;
+        message += `└───────────────────────────┘\n\n`;
+        if (subscription) {
+          message += `📅 <b>Last Status:</b> ${subscription.status}\n`;
+          if (subscription.expires_at) {
+            const expiresAt = new Date(subscription.expires_at);
+            message += `📅 <b>Expired:</b> ${expiresAt.toLocaleDateString('en-IN')}\n`;
+          }
+        } else {
+          message += `No subscription history found.\n`;
+        }
+      }
+
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  bot.onText(/\/premium_add (.+)/, async (msg, match) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const targetUserId = validateUserId(match[1]);
+      if (!targetUserId) {
+        await bot.sendMessage(msg.chat.id, '❌ Invalid user ID format');
+        return;
+      }
+
+      const result = await premiumService.createSubscription(targetUserId, {
+        amount: 30.0,
+        currency: 'INR',
+        paymentMethod: 'admin_manual',
+        paymentReference: `Admin: ${adminUserId}`
+      });
+
+      if (result.success) {
+        const expiresAt = new Date(result.subscription.expires_at);
+        const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
+          day: 'numeric', 
+          month: 'long', 
+          year: 'numeric' 
+        });
+        
+        const message = `╔═══════════════════════════╗
+║  ✅ <b>PREMIUM ADDED</b>        ║
+╚═══════════════════════════╝
+
+👤 <b>User ID:</b> <code>${targetUserId}</code>
+📅 <b>Expires:</b> ${expiresAtFormatted}
+💰 <b>Amount:</b> ₹${result.subscription.amount}
+
+<i>Premium subscription activated successfully!</i>`;
+        
+        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+      } else {
+        await bot.sendMessage(
+          msg.chat.id, 
+          `❌ <b>Failed to Add Premium</b>\n\n<code>${result.error}</code>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
     }
   });
 

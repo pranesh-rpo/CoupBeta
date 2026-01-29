@@ -7,6 +7,7 @@ import userService from '../services/userService.js';
 import groupService from '../services/groupService.js';
 import configService from '../services/configService.js';
 import adminNotifier from '../services/adminNotifier.js';
+import premiumService from '../services/premiumService.js';
 import otpHandler, { createOTPKeypad } from './otpHandler.js';
 import { createMainMenu, createBackButton, createStopButton, createAccountSwitchKeyboard, createGroupsMenu, createConfigMenu, createQuietHoursKeyboard, createABModeKeyboard, createScheduleKeyboard, createABMessagesKeyboard, createSavedTemplatesKeyboard, generateStatusText, createLoginOptionsKeyboard } from './keyboardHandler.js';
 import { config } from '../config.js';
@@ -924,6 +925,21 @@ export async function handleSetStartMessage(bot, msg) {
     return false; // Keep pending state so user can retry
   }
 
+  // Extract entities (for premium emoji support)
+  let messageEntities = null;
+  if (msg.entities && msg.entities.length > 0) {
+    messageEntities = msg.entities.map(e => ({
+      type: e.type,
+      offset: e.offset,
+      length: e.length,
+      language: e.language,
+      url: e.url,
+      user: e.user,
+      custom_emoji_id: e.custom_emoji_id, // For premium emojis
+    }));
+    console.log(`[handleSetStartMessage] Extracted ${messageEntities.length} entities from message (including premium emojis)`);
+  }
+
   // Check if message contains HTML tags (from forwarded messages with formatting)
   // Strip HTML tags to prevent them from showing in broadcasts
   if (text.includes('<') && text.includes('>')) {
@@ -944,7 +960,7 @@ export async function handleSetStartMessage(bot, msg) {
   }
 
   logger.logChange('MESSAGE_SET', userId, `Broadcast message set: ${text.substring(0, 50)}...`);
-  const result = await messageService.saveMessage(accountId, text, 'A');
+  const result = await messageService.saveMessage(accountId, text, 'A', messageEntities);
   
   if (result.success) {
     // Notify admins
@@ -1820,6 +1836,9 @@ export async function handleAccountButton(bot, callbackQuery) {
   // Add "Link Account" button (always available) - full width, prominent
   buttons.push([{ text: '➕ Link New Account', callback_data: 'btn_link' }]);
   
+  // Add Premium button - full width
+  buttons.push([{ text: '⭐ Premium', callback_data: 'btn_premium' }]);
+  
   if (accounts.length > 0) {
     // Add separator (using a non-clickable visual separator)
     // Note: Telegram doesn't support non-clickable buttons, so we'll skip this
@@ -2000,6 +2019,21 @@ export async function handleABMessageInput(bot, msg, accountId, variant) {
     return;
   }
 
+  // Extract entities (for premium emoji support)
+  let messageEntities = null;
+  if (msg.entities && msg.entities.length > 0) {
+    messageEntities = msg.entities.map(e => ({
+      type: e.type,
+      offset: e.offset,
+      length: e.length,
+      language: e.language,
+      url: e.url,
+      user: e.user,
+      custom_emoji_id: e.custom_emoji_id, // For premium emojis
+    }));
+    console.log(`[handleABMessageInput] Extracted ${messageEntities.length} entities from message ${variant} (including premium emojis)`);
+  }
+
   // Check if message contains HTML tags (from forwarded messages with formatting)
   // Strip HTML tags to prevent them from showing in broadcasts
   if (text.includes('<') && text.includes('>')) {
@@ -2020,7 +2054,7 @@ export async function handleABMessageInput(bot, msg, accountId, variant) {
   }
 
   logger.logChange('MESSAGE', userId, `Message ${variant} set: ${text.substring(0, 50)}...`);
-  const result = await messageService.saveMessage(accountId, text, variant);
+  const result = await messageService.saveMessage(accountId, text, variant, messageEntities);
   
   if (result.success) {
       await bot.sendMessage(
@@ -2963,4 +2997,211 @@ export async function handleApplyTags(bot, callbackQuery) {
     logger.logError('BACKGROUND_TASK', userId, err, 'Unhandled error in apply tags background task');
     console.error(`[CRITICAL] Unhandled error in apply tags background task: ${err.message}`, err);
   });
+}
+
+/**
+ * Handle premium button click
+ */
+export async function handlePremium(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Premium', chatId);
+  await safeAnswerCallback(bot, callbackQuery.id);
+
+  try {
+    const subscription = await premiumService.getSubscription(userId);
+    const isPremium = await premiumService.isPremium(userId);
+
+    if (isPremium && subscription) {
+      const expiresAt = new Date(subscription.expires_at);
+      const daysRemaining = subscription.daysRemaining || 0;
+      const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
+        day: 'numeric', 
+        month: 'short', 
+        year: 'numeric' 
+      });
+      
+      // Clean premium active UI - just essentials
+      const message = `⭐ <b>PREMIUM ACTIVE</b>
+
+📅 <b>Expires:</b> ${expiresAtFormatted}
+⏰ <b>Days Left:</b> ${daysRemaining} days
+
+✅ No tag verification
+✅ No auto tag setting
+✅ Works for all accounts`;
+      
+      await safeEditMessage(
+        bot,
+        chatId,
+        callbackQuery.message.message_id,
+        message,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 Back', callback_data: 'btn_account' }]
+            ]
+          }
+        }
+      );
+    } else {
+      // Clean premium purchase UI - just essentials
+      const message = `⭐ <b>PREMIUM</b>
+
+💰 <b>₹30/month</b>
+
+✅ No tag verification
+✅ No auto tag setting
+✅ Works for all accounts
+
+💬 <b>Contact:</b> @CoupSupportBot`;
+      
+      await safeEditMessage(
+        bot,
+        chatId,
+        callbackQuery.message.message_id,
+        message,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💬 Contact Support', url: 'https://t.me/CoupSupportBot' }],
+              [{ text: '🔙 Back', callback_data: 'btn_account' }]
+            ]
+          }
+        }
+      );
+    }
+  } catch (error) {
+    logger.logError('PREMIUM', userId, error, 'Error handling premium button');
+    await safeEditMessage(
+      bot,
+      chatId,
+      callbackQuery.message.message_id,
+      `❌ <b>Error Loading Premium</b>\n\nPlease try again later.`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+  }
+}
+
+/**
+ * Handle premium FAQ
+ */
+export async function handlePremiumFAQ(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  await safeAnswerCallback(bot, callbackQuery.id);
+
+  const message = `╔═══════════════════════════╗
+║   ❓ <b>PREMIUM FAQ</b>        ║
+╚═══════════════════════════╝
+
+<b>Q: What happens to my tags?</b>
+A: Premium users skip tag verification and setting completely. Your profile remains unchanged.
+
+<b>Q: Does it work for all accounts?</b>
+A: Yes! Premium applies to all accounts linked to your user ID.
+
+<b>Q: How long does activation take?</b>
+A: Usually 5-10 minutes after payment confirmation.
+
+<b>Q: Can I cancel anytime?</b>
+A: Yes, but refunds are not available. Your premium will remain active until expiry.
+
+<b>Q: What payment methods?</b>
+A: UPI, Bank Transfer, or other methods as available.
+
+<b>Q: Is it recurring?</b>
+A: Currently manual renewal. We'll notify you before expiry.
+
+<i>Still have questions? Contact support!</i>`;
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    message,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '💬 Contact Support', url: 'https://t.me/CoupSupportBot' }],
+          [{ text: '🔙 Back to Premium', callback_data: 'btn_premium' }]
+        ]
+      }
+    }
+  );
+}
+
+/**
+ * Handle premium benefits detail view
+ */
+export async function handlePremiumBenefits(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  await safeAnswerCallback(bot, callbackQuery.id);
+
+  const message = `╔═══════════════════════════╗
+║   ✨ <b>PREMIUM BENEFITS</b>    ║
+╚═══════════════════════════╝
+
+┌───────────────────────────┐
+│  🚫 <b>No Tag Verification</b>  │
+└───────────────────────────┘
+
+Skip all tag checks when:
+• Starting broadcasts
+• Applying tags manually
+• Account verification
+
+┌───────────────────────────┐
+│  🔒 <b>Profile Protection</b>  │
+└───────────────────────────┘
+
+Your profile stays untouched:
+• No automatic tag setting
+• No last name changes
+• No bio modifications
+• Full control over your profile
+
+┌───────────────────────────┐
+│  🔄 <b>All Accounts</b>       │
+└───────────────────────────┘
+
+Premium works for:
+• All linked accounts
+• New accounts you add
+• No per-account fees
+
+┌───────────────────────────┐
+│  ⚡ <b>Instant Access</b>      │
+└───────────────────────────┘
+
+Start broadcasting immediately:
+• No waiting for tag setup
+• No verification delays
+• Instant activation
+
+<i>Get premium and enjoy hassle-free broadcasting!</i>`;
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    message,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '💬 Purchase Premium', url: 'https://t.me/CoupSupportBot' }],
+          [{ text: '🔙 Back to Premium', callback_data: 'btn_premium' }]
+        ]
+      }
+    }
+  );
 }

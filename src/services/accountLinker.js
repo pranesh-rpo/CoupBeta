@@ -7,6 +7,7 @@ import db from '../database/db.js';
 import logger, { colors, logError } from '../utils/logger.js';
 import adminNotifier from './adminNotifier.js';
 import { isFloodWaitError, extractWaitTime } from '../utils/floodWaitHandler.js';
+import premiumService from './premiumService.js';
 
 // Profile tag constants - now loaded from config
 const NAME_TAG = config.lastNameTag;
@@ -2085,6 +2086,21 @@ class AccountLinker {
 
   async setProfileTags(client, accountId) {
     try {
+      // Check if user has premium subscription (skip tags for premium users)
+      const account = this.linkedAccounts.get(accountId.toString());
+      if (account && account.userId) {
+        const isPremium = await premiumService.isPremium(account.userId);
+        if (isPremium) {
+          console.log(`[TAGS] Skipping tag setting for premium user ${account.userId}, account ${accountId}`);
+          // Update tags_last_verified timestamp to indicate tags are "verified" (skipped)
+          await db.query(
+            'UPDATE accounts SET tags_last_verified = CURRENT_TIMESTAMP WHERE account_id = ?',
+            [accountId]
+          );
+          return;
+        }
+      }
+
       console.log(`[TAGS] Setting profile tags for account ${accountId}`);
       
       // Get current profile
@@ -2177,6 +2193,22 @@ class AccountLinker {
       const account = this.linkedAccounts.get(accountId.toString());
       if (!account || !account.client) {
         return { hasTags: false, error: 'Account or client not found' };
+      }
+
+      // Check if user has premium subscription (skip tag check for premium users)
+      if (account.userId) {
+        const isPremium = await premiumService.isPremium(account.userId);
+        if (isPremium) {
+          console.log(`[TAGS] Skipping tag check for premium user ${account.userId}, account ${accountId}`);
+          return {
+            hasTags: true,
+            hasNameTag: true,
+            hasBioTag: true,
+            lastName: '[Premium - Tags Skipped]',
+            bio: '[Premium - Tags Skipped]',
+            isPremium: true
+          };
+        }
       }
 
       const client = account.client;

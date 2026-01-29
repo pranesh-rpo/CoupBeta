@@ -54,12 +54,41 @@ export async function initializeSchema() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id INTEGER NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
         message_text TEXT NOT NULL,
+        message_entities TEXT,
         variant TEXT DEFAULT 'A',
         is_active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // Add message_entities column if it doesn't exist (for existing databases)
+    // Use direct database access to avoid error logging from db.query()
+    try {
+      // Ensure database is connected
+      const dbInstance = db.connect();
+      
+      // Check if column already exists by querying table info
+      const tableInfo = dbInstance.prepare(`PRAGMA table_info(messages)`).all();
+      const hasMessageEntities = tableInfo.some(col => col.name === 'message_entities');
+      
+      if (!hasMessageEntities) {
+        // Column doesn't exist, add it
+        dbInstance.prepare(`ALTER TABLE messages ADD COLUMN message_entities TEXT`).run();
+        console.log('✅ Added message_entities column to messages table');
+      } else {
+        // Column already exists, skip silently
+        // No need to log - this is expected for existing databases
+      }
+    } catch (error) {
+      // If check fails, column might already exist or table might not exist yet
+      // This is safe to ignore - CREATE TABLE IF NOT EXISTS above handles new tables
+      // Only log unexpected errors (not "duplicate column" or "no such table")
+      const errorMsg = error.message || String(error);
+      if (!errorMsg.includes('duplicate column') && !errorMsg.includes('no such table')) {
+        console.log(`⚠️  Could not check/add message_entities column: ${errorMsg}`);
+      }
+    }
 
     // Create saved_templates table (for Saved Messages sync)
     await db.query(`
@@ -396,6 +425,29 @@ export async function initializeSchema() {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_auto_reply_rules_account_id ON auto_reply_rules(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_moderation_rules_account_id ON moderation_rules(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_ab_testing_analytics_account_id ON ab_testing_analytics(account_id)`);
+
+    // Premium subscriptions table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS premium_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        status TEXT DEFAULT 'active' CHECK (status IN ('active', 'expired', 'cancelled')),
+        amount REAL NOT NULL DEFAULT 30.0,
+        currency TEXT DEFAULT 'INR',
+        payment_method TEXT,
+        payment_reference TEXT,
+        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        expires_at DATETIME NOT NULL,
+        cancelled_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id)
+      )
+    `);
+
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_user_id ON premium_subscriptions(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_status ON premium_subscriptions(status)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_expires_at ON premium_subscriptions(expires_at)`);
 
     console.log('✅ Database schema initialized');
   } catch (error) {

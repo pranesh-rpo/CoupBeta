@@ -1,6 +1,7 @@
 import automationService from '../services/automationService.js';
 import accountLinker from '../services/accountLinker.js';
 import messageService from '../services/messageService.js';
+import premiumService from '../services/premiumService.js';
 
 /**
  * Escape HTML entities in text to prevent HTML tags from being rendered
@@ -111,13 +112,10 @@ export async function createMainMenu(userId = null) {
         [{ text: '💾 Saved Templates', callback_data: 'btn_saved_templates' }],
         // Management section - 2 columns
         [
-          { text: '👥 Groups', callback_data: 'btn_groups' },
-          { text: '📊 Statistics', callback_data: 'btn_stats' }
-        ],
-        [
-          { text: '⚙️ Settings', callback_data: 'btn_config' },
+          { text: '📊 Statistics', callback_data: 'btn_stats' },
           { text: '🔔 Mentions', callback_data: 'btn_mention' }
         ],
+        [{ text: '⚙️ Settings', callback_data: 'btn_config' }],
         // Support button - full width
         [{ text: '💬 Get Support', url: 'https://t.me/CoupSupportBot' }],
         // Broadcast control - full width, prominent
@@ -221,6 +219,8 @@ export function createConfigMenu(currentInterval = 11, quietHours = null, abMode
         [{ text: `🔄 A/B Mode: ${abModeText}`, callback_data: 'btn_config_ab' }],
         // Schedule
         [{ text: '📅 Schedule', callback_data: 'btn_config_schedule' }],
+        // Groups
+        [{ text: '👥 Groups', callback_data: 'btn_groups' }],
         [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }],
       ],
     },
