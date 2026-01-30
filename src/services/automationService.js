@@ -1,7 +1,6 @@
 import accountLinker from './accountLinker.js';
 import messageManager from './messageManager.js';
 import messageService from './messageService.js';
-import savedTemplatesService from './savedTemplatesService.js';
 import configService from './configService.js';
 import loggingService from './loggingService.js';
 import groupService from './groupService.js';
@@ -47,18 +46,37 @@ class AutomationService {
   
   /**
    * Get random delay between messages for anti-freeze protection
-   * Fixed delays - no automatic increases to maintain consistent timing
+   * Uses custom group delay if set, otherwise uses default from config
    * @param {number} accountId - Account ID
-   * @returns {number} Delay in milliseconds
+   * @returns {Promise<number>} Delay in milliseconds
    */
-  getRandomDelay(accountId) {
-    const { minDelayBetweenMessages, maxDelayBetweenMessages } = config.antiFreeze;
-    
-    // Fixed random delay - no adaptive increases
-    // This ensures consistent delays throughout the broadcast
-    const baseDelay = minDelayBetweenMessages + Math.random() * (maxDelayBetweenMessages - minDelayBetweenMessages);
-    
-    return Math.round(baseDelay);
+  async getRandomDelay(accountId) {
+    try {
+      const settings = await configService.getAccountSettings(accountId);
+      let minDelay, maxDelay;
+      
+      // Use custom group delay if set, otherwise use default from config
+      if (settings?.groupDelayMin !== null && settings?.groupDelayMax !== null) {
+        minDelay = settings.groupDelayMin * 1000; // Convert seconds to milliseconds
+        maxDelay = settings.groupDelayMax * 1000;
+      } else {
+        const { minDelayBetweenMessages, maxDelayBetweenMessages } = config.antiFreeze;
+        minDelay = minDelayBetweenMessages;
+        maxDelay = maxDelayBetweenMessages;
+      }
+      
+      // Fixed random delay - no adaptive increases
+      // This ensures consistent delays throughout the broadcast
+      const baseDelay = minDelay + Math.random() * (maxDelay - minDelay);
+      
+      return Math.round(baseDelay);
+    } catch (error) {
+      logError(`[DELAY ERROR] Error getting delay for account ${accountId}:`, error);
+      // Fallback to default config values
+      const { minDelayBetweenMessages, maxDelayBetweenMessages } = config.antiFreeze;
+      const baseDelay = minDelayBetweenMessages + Math.random() * (maxDelayBetweenMessages - minDelayBetweenMessages);
+      return Math.round(baseDelay);
+    }
   }
   
   /**
@@ -539,8 +557,8 @@ class AutomationService {
 
     // Get message with A/B variant selection and saved template support
     let broadcastMessage = message;
-    let useSavedTemplate = false;
-    let savedTemplateData = null;
+    let useForwardMode = false;
+    let forwardMessageId = null;
     
     // Validate message if provided (check for empty/whitespace)
     if (broadcastMessage && typeof broadcastMessage === 'string' && broadcastMessage.trim().length === 0) {
@@ -562,39 +580,26 @@ class AutomationService {
         settings = {};
       }
       
-      const savedTemplateSlot = settings?.savedTemplateSlot;
+      // Check if forward mode is enabled
+      useForwardMode = settings?.forwardMode || false;
+      forwardMessageId = settings?.forwardMessageId;
       
-      console.log(`[BROADCAST] Checking saved template slot for account ${accountId}: ${savedTemplateSlot === null ? 'null (none)' : savedTemplateSlot}`);
-      
-      // Check if saved template slot is active (must be explicitly 1, 2, or 3, not null/undefined)
-      if (savedTemplateSlot !== null && savedTemplateSlot !== undefined && [1, 2, 3].includes(savedTemplateSlot)) {
-        try {
-          const template = await savedTemplatesService.getSavedTemplate(accountId, savedTemplateSlot);
-          if (template && template.messageId) {
-            useSavedTemplate = true;
-            savedTemplateData = template;
-            console.log(`[BROADCAST] Using saved template slot ${savedTemplateSlot} for account ${accountId}`);
-            // For saved templates, we'll forward the message (handled in sendSingleMessageToAllGroups)
-          } else {
-            console.log(`[BROADCAST] Saved template slot ${savedTemplateSlot} is set but template not found, falling back to normal message`);
-          }
-        } catch (templateError) {
-          logError(`[BROADCAST ERROR] Error getting saved template:`, templateError);
-          console.log(`[BROADCAST] Error retrieving template slot ${savedTemplateSlot}, falling back to normal message`);
-        }
-      } else {
-        console.log(`[BROADCAST] No saved template slot active (value: ${savedTemplateSlot}), using normal message`);
+      if (useForwardMode && forwardMessageId) {
+        console.log(`[BROADCAST] Forward mode enabled for account ${accountId}, will forward message ID ${forwardMessageId}`);
+      } else if (useForwardMode && !forwardMessageId) {
+        console.log(`[BROADCAST] WARNING: Forward mode enabled but no message ID set for account ${accountId}, falling back to normal message`);
+        useForwardMode = false;
       }
       
-      // Check if auto-mention is enabled - note: mentions only work with regular messages, not forwarded templates
+      // Check if auto-mention is enabled - note: mentions only work with regular messages, not forwarded messages
       const autoMention = settings?.autoMention || false;
-      if (autoMention && useSavedTemplate) {
-        console.log(`[BROADCAST] WARNING: Auto-mention is enabled but using saved template. Mentions cannot be added to forwarded messages.`);
-        console.log(`[BROADCAST] To use mentions, disable saved template slot or use regular text messages.`);
+      if (autoMention && useForwardMode) {
+        console.log(`[BROADCAST] WARNING: Auto-mention is enabled but using forward mode. Mentions cannot be added to forwarded messages.`);
+        console.log(`[BROADCAST] To use mentions, disable forward mode or use regular text messages.`);
       }
       
-      // If not using saved template, get A/B variant
-      if (!useSavedTemplate) {
+      // If not using forward mode, get A/B variant
+      if (!useForwardMode) {
         try {
           const abMode = settings?.abMode || false;
           const abModeType = settings?.abModeType || 'single';
@@ -642,7 +647,7 @@ class AutomationService {
           messageEntities = null;
         }
         
-        if (!broadcastMessage && !useSavedTemplate) {
+        if (!broadcastMessage && !useForwardMode) {
           this.pendingStarts.delete(broadcastKey);
           return { success: false, error: 'No message set. Please set a message first.' };
         }
@@ -650,9 +655,9 @@ class AutomationService {
     }
     
     // Final validation: ensure we have either a message or saved template
-    if (!broadcastMessage && !useSavedTemplate) {
+    if (!broadcastMessage && !useForwardMode) {
       this.pendingStarts.delete(broadcastKey);
-      return { success: false, error: 'No message or saved template available. Please set a message or select a saved template first.' };
+      return { success: false, error: 'No message available. Please set a message first.' };
     }
     
     // Get custom interval for broadcast cycles (minimum 11 minutes)
@@ -670,8 +675,8 @@ class AutomationService {
       isRunning: true,
       message: broadcastMessage,
       messageEntities, // Store entities for premium emoji support
-      useSavedTemplate,
-      savedTemplateData,
+      useForwardMode,
+      forwardMessageId,
       timeouts: [],
       accountId,
       userId,
@@ -714,8 +719,8 @@ class AutomationService {
       
       // NOW send initial message (this may take time, but next cycle is already scheduled)
       // Validate we have something to send before starting
-      if (!broadcastMessage && !useSavedTemplate) {
-        console.log(`[BROADCAST] No message or template available, stopping broadcast`);
+      if (!broadcastMessage && !useForwardMode) {
+        console.log(`[BROADCAST] No message available, stopping broadcast`);
         this.pendingStarts.delete(broadcastKey);
         const broadcast = this.activeBroadcasts.get(broadcastKey);
         if (broadcast) {
@@ -727,7 +732,7 @@ class AutomationService {
         return { success: false, error: 'No message or saved template available' };
       }
       
-      this.sendSingleMessageToAllGroups(userId, accountId, broadcastMessage, useSavedTemplate, savedTemplateData, true, messageEntities)
+      this.sendSingleMessageToAllGroups(userId, accountId, broadcastMessage, useForwardMode, forwardMessageId, true, messageEntities)
         .then(() => {
           console.log(`[BROADCAST] Initial message send completed for user ${userId}, account ${accountId}`);
         })
@@ -1237,7 +1242,7 @@ class AutomationService {
     }
   }
 
-  async sendSingleMessageToAllGroups(userId, accountId, message, useSavedTemplate = false, savedTemplateData = null, bypassSchedule = false, messageEntities = null) {
+  async sendSingleMessageToAllGroups(userId, accountId, message, useForwardMode = false, forwardMessageId = null, bypassSchedule = false, messageEntities = null) {
     const broadcastKey = this._getBroadcastKey(userId, accountId);
     const broadcast = this.activeBroadcasts.get(broadcastKey);
     if (!broadcast || !broadcast.isRunning) {
@@ -1314,16 +1319,16 @@ class AutomationService {
         return;
       }
 
-      // Get Saved Messages entity for forwarding if using saved template
+      // Get Saved Messages entity for forwarding if using forward mode
       let savedMessagesEntity = null;
-      if (useSavedTemplate && savedTemplateData) {
+      if (useForwardMode && forwardMessageId) {
         try {
           const me = await client.getMe();
           savedMessagesEntity = await client.getEntity(me);
-          console.log(`[BROADCAST] Using saved template slot ${savedTemplateData.slot} (message ID: ${savedTemplateData.messageId})`);
+          console.log(`[BROADCAST] Using forward mode with message ID ${forwardMessageId}`);
         } catch (error) {
           logError(`[BROADCAST ERROR] Failed to get Saved Messages entity:`, error);
-          useSavedTemplate = false; // Fallback to normal message
+          useForwardMode = false; // Fallback to normal message
         }
       }
 
@@ -1343,10 +1348,13 @@ class AutomationService {
         return;
       }
       
+      // Import groupBlacklistService dynamically to avoid circular dependencies
+      const { default: groupBlacklistService } = await import('./groupBlacklistService.js');
+      
       // Filter only groups (exclude channels and private chats)
       // dialog.isGroup = true for regular groups and supergroups
       // dialog.isChannel = true for channels (both broadcast and megagroup channels) - EXCLUDED
-      const groups = dialogs.filter((dialog) => {
+      const allGroups = dialogs.filter((dialog) => {
         if (!dialog) return false;
         
         const isGroup = dialog.isGroup || false;
@@ -1361,17 +1369,31 @@ class AutomationService {
             return false;
           }
           
-          const entityType = entity?.className || 'Unknown';
-          const groupId = entity?.id?.toString() || entity?.id || 'unknown';
-          const groupName = dialog.name || 'Unknown';
-          
-          // Log each group being included for transparency
-          console.log(`[BROADCAST] ✅ Including Group: "${groupName}" (Entity: ${entityType}, ID: ${groupId})`);
           return true;
         }
         
         return false;
       });
+      
+      // Filter out blacklisted groups
+      const groups = [];
+      for (const dialog of allGroups) {
+        const entity = dialog.entity;
+        const groupId = entity?.id?.toString() || entity?.id || 'unknown';
+        const groupName = dialog.name || 'Unknown';
+        const entityType = entity?.className || 'Unknown';
+        
+        // Check if group is blacklisted
+        const isBlacklisted = await groupBlacklistService.isBlacklisted(accountId, groupId);
+        if (isBlacklisted) {
+          console.log(`[BROADCAST] 🚫 Skipping blacklisted group: "${groupName}" (ID: ${groupId})`);
+          continue;
+        }
+        
+        // Log each group being included for transparency
+        console.log(`[BROADCAST] ✅ Including Group: "${groupName}" (Entity: ${entityType}, ID: ${groupId})`);
+        groups.push(dialog);
+      }
 
       console.log(`[BROADCAST] ✅ Filtered ${groups.length} groups from ${dialogs.length} dialogs for user ${userId}`);
       
@@ -1498,13 +1520,13 @@ class AutomationService {
             continue; // Skip this group and continue with next group instead of waiting
           }
           
-          if (useSavedTemplate && savedTemplateData && savedMessagesEntity) {
+          if (useForwardMode && forwardMessageId && savedMessagesEntity) {
             // Validate before forwarding
             if (!group.entity) {
               throw new Error('Group entity is missing');
             }
-            if (!savedTemplateData.messageId) {
-              throw new Error('Saved template message ID is missing');
+            if (!forwardMessageId) {
+              throw new Error('Forward message ID is missing');
             }
             if (!savedMessagesEntity) {
               throw new Error('Saved Messages entity is missing');
@@ -1512,12 +1534,12 @@ class AutomationService {
             
             // Forward message from Saved Messages (preserves premium emoji and entities)
             // Note: Mentions cannot be added to forwarded messages
-            console.log(`[BROADCAST] Forwarding saved template - mentions not supported for forwarded messages`);
+            console.log(`[BROADCAST] Forwarding message - mentions not supported for forwarded messages`);
             await client.forwardMessages(group.entity, {
-              messages: [savedTemplateData.messageId],
+              messages: [forwardMessageId],
               fromPeer: savedMessagesEntity,
             });
-            console.log(`[BROADCAST] Forwarded saved template (slot ${savedTemplateData.slot}) to group ${i + 1}/${groupsToSend.length}: ${group.name || 'Unknown'}`);
+            console.log(`[BROADCAST] Forwarded message (ID: ${forwardMessageId}) to group ${i + 1}/${groupsToSend.length}: ${group.name || 'Unknown'}`);
             
             // Record message sent for rate limiting tracking
             this.recordMessageSent(accountId);
@@ -1833,7 +1855,7 @@ class AutomationService {
           // Random delay between groups for anti-freeze protection (not fixed)
           // Don't delay after last group
           if (i < groupsToSend.length - 1) {
-            const delayMs = this.getRandomDelay(accountId);
+            const delayMs = await this.getRandomDelay(accountId);
             console.log(`[ANTI-FREEZE] Waiting ${(delayMs / 1000).toFixed(2)} seconds before sending to next group...`);
             await new Promise((resolve) => setTimeout(resolve, delayMs));
           }
@@ -1857,9 +1879,9 @@ class AutomationService {
               }
               
               // Retry sending to this group
-              if (useSavedTemplate && savedTemplateData && savedMessagesEntity) {
+              if (useForwardMode && forwardMessageId && savedMessagesEntity) {
                 await client.forwardMessages(group.entity, {
-                  messages: [savedTemplateData.messageId],
+                  messages: [forwardMessageId],
                   fromPeer: savedMessagesEntity,
                 });
                 console.log(`[BROADCAST] ✅ Retry successful: Forwarded to group "${groupName}"`);
@@ -1927,18 +1949,17 @@ class AutomationService {
                                              (retryErrorCode === 400 && retryErrorMessage.includes('MESSAGE_ID_INVALID')) ||
                                              (retryError.errorMessage && retryError.errorMessage.includes('MESSAGE_ID_INVALID'));
               
-              if (isRetryMessageIdInvalid && useSavedTemplate && savedTemplateData) {
-                console.log(`[BROADCAST] ⚠️ MESSAGE_ID_INVALID during retry: Saved template message (slot ${savedTemplateData.slot}) no longer exists`);
-                // Try to clear the invalid template slot
+              if (isRetryMessageIdInvalid && useForwardMode && forwardMessageId) {
+                console.log(`[BROADCAST] ⚠️ MESSAGE_ID_INVALID during retry: Forward message (ID: ${forwardMessageId}) no longer exists`);
+                // Clear the invalid forward message ID
                 try {
-                  const savedTemplatesService = (await import('./savedTemplatesService.js')).default;
-                  await savedTemplatesService.clearSlot(accountId, savedTemplateData.slot);
-                  console.log(`[BROADCAST] ✅ Cleared invalid saved template slot ${savedTemplateData.slot} for account ${accountId}`);
+                  await configService.setForwardMessageId(accountId, null);
+                  console.log(`[BROADCAST] ✅ Cleared invalid forward message ID for account ${accountId}`);
                 } catch (clearError) {
-                  console.log(`[BROADCAST] ⚠️ Could not clear invalid template slot: ${clearError.message}`);
+                  console.log(`[BROADCAST] ⚠️ Could not clear invalid forward message ID: ${clearError.message}`);
                 }
                 errorCount++;
-                failedGroups.push({ name: groupName, reason: 'Invalid saved template message ID (retry)', id: groupId || 'unknown' });
+                failedGroups.push({ name: groupName, reason: 'Invalid forward message ID (retry)', id: groupId || 'unknown' });
                 continue; // Skip this group
               }
               
@@ -1975,26 +1996,25 @@ class AutomationService {
                                      (errorCode === 400 && errorMessage.includes('MESSAGE_ID_INVALID')) ||
                                      (error.errorMessage && error.errorMessage.includes('MESSAGE_ID_INVALID'));
           
-          if (isMessageIdInvalid && useSavedTemplate && savedTemplateData) {
+          if (isMessageIdInvalid && useForwardMode && forwardMessageId) {
             const errorGroupName = group.name || 'Unknown Group';
             const errorGroupId = group.entity?.id?.toString() || group.entity?.id || 'unknown';
             
-            console.log(`[BROADCAST] ⚠️ MESSAGE_ID_INVALID: Saved template message (slot ${savedTemplateData.slot}, ID: ${savedTemplateData.messageId}) no longer exists in Saved Messages for group "${errorGroupName}"`);
-            loggingService.logError(accountId, `MESSAGE_ID_INVALID: Saved template message (slot ${savedTemplateData.slot}) no longer exists - message may have been deleted from Saved Messages`, userId);
+            console.log(`[BROADCAST] ⚠️ MESSAGE_ID_INVALID: Forward message (ID: ${forwardMessageId}) no longer exists in Saved Messages for group "${errorGroupName}"`);
+            loggingService.logError(accountId, `MESSAGE_ID_INVALID: Forward message (ID: ${forwardMessageId}) no longer exists - message may have been deleted from Saved Messages`, userId);
             
-            // Try to clear the invalid template slot
+            // Clear the invalid forward message ID
             try {
-              const savedTemplatesService = (await import('./savedTemplatesService.js')).default;
-              await savedTemplatesService.clearSlot(accountId, savedTemplateData.slot);
-              console.log(`[BROADCAST] ✅ Cleared invalid saved template slot ${savedTemplateData.slot} for account ${accountId}`);
-              loggingService.logWarning(accountId, `Cleared invalid saved template slot ${savedTemplateData.slot}`, userId);
+              await configService.setForwardMessageId(accountId, null);
+              console.log(`[BROADCAST] ✅ Cleared invalid forward message ID for account ${accountId}`);
+              loggingService.logWarning(accountId, `Cleared invalid forward message ID`, userId);
             } catch (clearError) {
-              console.log(`[BROADCAST] ⚠️ Could not clear invalid template slot: ${clearError.message}`);
+              console.log(`[BROADCAST] ⚠️ Could not clear invalid forward message ID: ${clearError.message}`);
             }
             
             // Skip this group and continue with others
             errorCount++;
-            failedGroups.push({ name: errorGroupName, reason: 'Invalid saved template message ID', id: errorGroupId });
+            failedGroups.push({ name: errorGroupName, reason: 'Invalid forward message ID', id: errorGroupId });
             continue;
           }
           const isBanned = errorMessage.includes('USER_BANNED_IN_CHANNEL') || 
@@ -2226,9 +2246,9 @@ class AutomationService {
               }
               
               // Retry sending to this group
-              if (useSavedTemplate && savedTemplateData && savedMessagesEntity) {
+              if (useForwardMode && forwardMessageId && savedMessagesEntity) {
                 await client.forwardMessages(group.entity, {
-                  messages: [savedTemplateData.messageId],
+                  messages: [forwardMessageId],
                   fromPeer: savedMessagesEntity,
                 });
                 console.log(`[FLOOD_WAIT] ✅ Retry successful: Forwarded to group "${errorGroupName}"`);
@@ -2316,16 +2336,15 @@ class AutomationService {
                                              (retryErrorCode === 400 && retryErrorMessage.includes('MESSAGE_ID_INVALID')) ||
                                              (retryError.errorMessage && retryError.errorMessage.includes('MESSAGE_ID_INVALID'));
               
-              if (isRetryMessageIdInvalid && useSavedTemplate && savedTemplateData) {
-                console.log(`[FLOOD_WAIT] ⚠️ MESSAGE_ID_INVALID during flood wait retry: Saved template message (slot ${savedTemplateData.slot}) no longer exists`);
-                loggingService.logError(accountId, `MESSAGE_ID_INVALID during flood wait retry: Saved template message (slot ${savedTemplateData.slot}) no longer exists`, userId);
-                // Try to clear the invalid template slot
+              if (isRetryMessageIdInvalid && useForwardMode && forwardMessageId) {
+                console.log(`[FLOOD_WAIT] ⚠️ MESSAGE_ID_INVALID during flood wait retry: Forward message (ID: ${forwardMessageId}) no longer exists`);
+                loggingService.logError(accountId, `MESSAGE_ID_INVALID during flood wait retry: Forward message (ID: ${forwardMessageId}) no longer exists`, userId);
+                // Clear the invalid forward message ID
                 try {
-                  const savedTemplatesService = (await import('./savedTemplatesService.js')).default;
-                  await savedTemplatesService.clearSlot(accountId, savedTemplateData.slot);
-                  console.log(`[FLOOD_WAIT] ✅ Cleared invalid saved template slot ${savedTemplateData.slot} for account ${accountId}`);
+                  await configService.setForwardMessageId(accountId, null);
+                  console.log(`[FLOOD_WAIT] ✅ Cleared invalid forward message ID for account ${accountId}`);
                 } catch (clearError) {
-                  console.log(`[FLOOD_WAIT] ⚠️ Could not clear invalid template slot: ${clearError.message}`);
+                  console.log(`[FLOOD_WAIT] ⚠️ Could not clear invalid forward message ID: ${clearError.message}`);
                 }
                 errorCount++;
                 failedGroups.push({ 
@@ -2374,9 +2393,9 @@ class AutomationService {
                 }
                 
                 // Retry sending (simplified - no mentions for retry)
-                if (useSavedTemplate && savedTemplateData && savedMessagesEntity) {
+                if (useForwardMode && forwardMessageId && savedMessagesEntity) {
                   await client.forwardMessages(group.entity, {
-                    messages: [savedTemplateData.messageId],
+                    messages: [forwardMessageId],
                     fromPeer: savedMessagesEntity,
                   });
                   console.log(`[BROADCAST] ✅ Retry successful: Forwarded to group "${errorGroupName}"`);
@@ -2402,16 +2421,15 @@ class AutomationService {
                                                (retryErrorCode === 400 && retryErrorMessage.includes('MESSAGE_ID_INVALID')) ||
                                                (retryError.errorMessage && retryError.errorMessage.includes('MESSAGE_ID_INVALID'));
                 
-                if (isRetryMessageIdInvalid && useSavedTemplate && savedTemplateData) {
-                  console.log(`[BROADCAST] ⚠️ MESSAGE_ID_INVALID during retry: Saved template message (slot ${savedTemplateData.slot}) no longer exists`);
-                  loggingService.logError(accountId, `MESSAGE_ID_INVALID during retry: Saved template message (slot ${savedTemplateData.slot}) no longer exists`, userId);
-                  // Try to clear the invalid template slot
+                if (isRetryMessageIdInvalid && useForwardMode && forwardMessageId) {
+                  console.log(`[BROADCAST] ⚠️ MESSAGE_ID_INVALID during retry: Forward message (ID: ${forwardMessageId}) no longer exists`);
+                  loggingService.logError(accountId, `MESSAGE_ID_INVALID during retry: Forward message (ID: ${forwardMessageId}) no longer exists`, userId);
+                  // Clear the invalid forward message ID
                   try {
-                    const savedTemplatesService = (await import('./savedTemplatesService.js')).default;
-                    await savedTemplatesService.clearSlot(accountId, savedTemplateData.slot);
-                    console.log(`[BROADCAST] ✅ Cleared invalid saved template slot ${savedTemplateData.slot} for account ${accountId}`);
+                    await configService.setForwardMessageId(accountId, null);
+                    console.log(`[BROADCAST] ✅ Cleared invalid forward message ID for account ${accountId}`);
                   } catch (clearError) {
-                    console.log(`[BROADCAST] ⚠️ Could not clear invalid template slot: ${clearError.message}`);
+                    console.log(`[BROADCAST] ⚠️ Could not clear invalid forward message ID: ${clearError.message}`);
                   }
                   errorCount++;
                   failedGroups.push({ 
@@ -2434,7 +2452,7 @@ class AutomationService {
             }
             
             // For other errors, use random delay before continuing (anti-freeze)
-            const delayMs = this.getRandomDelay(accountId);
+            const delayMs = await this.getRandomDelay(accountId);
             await new Promise((resolve) => setTimeout(resolve, delayMs));
           }
         }

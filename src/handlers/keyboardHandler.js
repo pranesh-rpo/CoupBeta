@@ -80,6 +80,7 @@ export async function createMainMenu(userId = null) {
 
   // Get account info to show in button text
   let accountButtonText = '👤 Manage Account';
+  let premiumButtonText = '⭐ Premium';
   if (userId) {
     try {
       const accounts = await accountLinker.getAccounts(userId);
@@ -93,6 +94,9 @@ export async function createMainMenu(userId = null) {
           accountButtonText = `👤 ${escapeHtml(activeAccount.phone)}`;
         }
       }
+
+      // Premium button is just the star symbol
+      premiumButtonText = '⭐';
     } catch (error) {
       // If check fails, use default text
       console.log(`[KEYBOARD] Error getting account info: ${error.message}`);
@@ -102,24 +106,29 @@ export async function createMainMenu(userId = null) {
   return {
     reply_markup: {
       inline_keyboard: [
-        // Account section - full width, prominent
+        // Account Management - Full Width (Top Priority)
         [{ text: accountButtonText, callback_data: 'btn_account' }],
-        // Messages section - organized in 2 columns
+        // Premium - Full Width (Prominent)
+        [{ text: premiumButtonText, callback_data: 'btn_premium' }],
+        // Core Functions - 2 columns (most used)
         [
           { text: '✍️ Set Message', callback_data: 'btn_set_start_msg' },
-          { text: '🔄 A/B Testing', callback_data: 'btn_ab_messages' }
+          { text: '⚙️ Settings', callback_data: 'btn_config' }
         ],
-        [{ text: '💾 Saved Templates', callback_data: 'btn_saved_templates' }],
-        // Management section - 2 columns
+        // Advanced Features - 2 columns
         [
-          { text: '📊 Statistics', callback_data: 'btn_stats' },
+          { text: '🔄 A/B Testing', callback_data: 'btn_ab_messages' },
+          { text: '📊 Statistics', callback_data: 'btn_stats' }
+        ],
+        // Additional Tools - 2 columns
+        [
+          { text: '👥 Groups', callback_data: 'btn_groups' },
           { text: '🔔 Mentions', callback_data: 'btn_mention' }
         ],
-        [{ text: '⚙️ Settings', callback_data: 'btn_config' }],
-        // Support button - full width
-        [{ text: '💬 Get Support', url: 'https://t.me/CoupSupportBot' }],
-        // Broadcast control - full width, prominent
+        // Broadcast Control - Moved Down (Full Width)
         broadcastButton,
+        // Support - Full Width
+        [{ text: '💬 Get Support', url: 'https://t.me/CoupSupportBot' }],
       ],
     },
   };
@@ -200,28 +209,34 @@ export function createStopButton() {
   };
 }
 
-export function createConfigMenu(currentInterval = 11, quietHours = null, abMode = false, abModeType = 'single') {
-  const quietHoursText = quietHours && quietHours.start && quietHours.end 
-    ? `${quietHours.start} - ${quietHours.end}` 
-    : 'Not set';
-  
-  const abModeText = abMode ? `${abModeType.charAt(0).toUpperCase() + abModeType.slice(1)}` : 'Disabled';
-  
+export function createConfigMenu(currentInterval = 11, quietHours = null, abMode = false, abModeType = 'single', groupDelayMin = null, groupDelayMax = null, forwardMode = false) {
   return {
     reply_markup: {
       inline_keyboard: [
-        // Custom interval and timing
+        // Core Broadcast Settings - 2 per row
         [
-          { text: `⏱️ Interval: ${currentInterval} min`, callback_data: 'btn_config_custom_interval' },
-          { text: `🌙 Quiet Hours`, callback_data: 'btn_config_quiet_hours' }
+          { text: '⏱️ Broadcast Interval', callback_data: 'btn_config_custom_interval' },
+          { text: '⏳ Group Delay', callback_data: 'btn_config_group_delay' }
         ],
-        // A/B testing
-        [{ text: `🔄 A/B Mode: ${abModeText}`, callback_data: 'btn_config_ab' }],
-        // Schedule
-        [{ text: '📅 Schedule', callback_data: 'btn_config_schedule' }],
-        // Groups
-        [{ text: '👥 Groups', callback_data: 'btn_groups' }],
-        [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }],
+        [
+          { text: '🔄 A/B Testing', callback_data: 'btn_config_ab' },
+          { text: '🌙 Quiet Hours', callback_data: 'btn_config_quiet_hours' }
+        ],
+        [
+          { text: '📅 Schedule', callback_data: 'btn_config_schedule' },
+          { text: '👥 Groups', callback_data: 'btn_groups' }
+        ],
+        [
+          { text: '🚫 Group Blacklist', callback_data: 'btn_config_blacklist' },
+          { text: '💬 Auto Reply DM', callback_data: 'btn_config_auto_reply_dm' }
+        ],
+        [
+          { text: '💬 Auto Reply Groups', callback_data: 'btn_config_auto_reply_groups' }
+        ],
+        // Forward Mode - Full Width
+        [{ text: '📤 Forward Mode', callback_data: 'btn_config_forward_mode' }],
+        // Back - Full Width
+        [{ text: '🔙 Back', callback_data: 'btn_main_menu' }],
       ],
     },
   };

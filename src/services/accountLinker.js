@@ -363,11 +363,12 @@ class AccountLinker {
         }
       }
       
-      // Instead of deleting the account, mark session as null so user can re-authenticate
+      // Instead of deleting the account, mark session as revoked and inactive
+      // Use empty string instead of NULL to avoid NOT NULL constraint violation
       // This prevents accounts from being deleted unnecessarily
       const updateResult = await db.query(
-        'UPDATE accounts SET session_string = NULL, is_active = 0 WHERE account_id = ?',
-        [accountIdNum]
+        'UPDATE accounts SET session_string = ?, is_active = 0 WHERE account_id = ?',
+        ['', accountIdNum]
       );
       
       if (updateResult.rowCount > 0) {
@@ -522,10 +523,11 @@ class AccountLinker {
                 
                 if (errorMsg.includes('SESSION_REVOKED') || errorMsg.includes('AUTH_KEY')) {
                   console.log(`[ACCOUNT] Account ${row.account_id} session appears revoked during verification - marking for re-auth`);
-                  // Mark session as null in database instead of deleting account
+                  // Mark session as revoked in database instead of deleting account
+                  // Use empty string instead of NULL to avoid NOT NULL constraint violation
                   await db.query(
-                    'UPDATE accounts SET session_string = NULL WHERE account_id = $1',
-                    [row.account_id]
+                    'UPDATE accounts SET session_string = ?, is_active = 0 WHERE account_id = $1',
+                    ['', row.account_id]
                   );
                   await client.disconnect().catch(() => {});
                   continue; // Skip this account
@@ -542,10 +544,11 @@ class AccountLinker {
               
               if (errorMsg.includes('SESSION_REVOKED') || errorMsg.includes('AUTH_KEY')) {
                 console.log(`[ACCOUNT] Account ${row.account_id} session revoked during verification - marking for re-auth`);
-                // Mark session as null instead of deleting account
+                // Mark session as revoked instead of deleting account
+                // Use empty string instead of NULL to avoid NOT NULL constraint violation
                 await db.query(
-                  'UPDATE accounts SET session_string = NULL WHERE account_id = $1',
-                  [row.account_id]
+                  'UPDATE accounts SET session_string = ?, is_active = 0 WHERE account_id = $1',
+                  ['', row.account_id]
                 );
                 await client.disconnect().catch(() => {});
                 continue; // Skip this account
@@ -1257,17 +1260,34 @@ class AccountLinker {
         };
       }
       
-      // Clean up failed verification
-      if (pending.client) {
-        try {
-          await pending.client.disconnect();
-        } catch (e) {
-          // Ignore disconnect errors
+      // Check error type to determine if we should keep pending verification
+      const errorMsg = error.errorMessage || error.message || '';
+      const isInvalidCode = errorMsg.includes('PHONE_CODE_INVALID') || 
+                           errorMsg.includes('code') && errorMsg.includes('invalid');
+      const isExpired = errorMsg.includes('PHONE_CODE_EXPIRED') || 
+                       errorMsg.includes('expired') || 
+                       errorMsg.includes('timeout');
+      
+      // Only clean up verification for critical errors (expired, not invalid code)
+      // Keep pending verification for wrong code so user can try again
+      if (isExpired || !isInvalidCode) {
+        console.log(`[OTP] Critical error (expired or other) - cleaning up verification for user ${userId}`);
+        // Clean up failed verification for expired codes or other critical errors
+        if (pending.client) {
+          try {
+            await pending.client.disconnect();
+          } catch (e) {
+            // Ignore disconnect errors
+          }
         }
+        this.pendingVerifications.delete(userId);
+        await this.deletePendingVerification(userId);
+        return { success: false, error: error.message };
+      } else {
+        // Wrong code - keep pending verification so user can try again
+        console.log(`[OTP] Invalid code entered - keeping pending verification for retry (user ${userId})`);
+        return { success: false, error: error.message || 'Invalid verification code. Please try again.' };
       }
-      this.pendingVerifications.delete(userId);
-      await this.deletePendingVerification(userId);
-      return { success: false, error: error.message };
     }
   }
 
@@ -1418,6 +1438,15 @@ class AccountLinker {
         return { success: false, error: 'Unexpected response from Telegram' };
       }
     } catch (error) {
+      // Handle AUTH_USER_CANCEL gracefully (user cancelled, not an error)
+      const errorMsg = error.errorMessage || error.message || '';
+      if (errorMsg.includes('AUTH_USER_CANCEL') || errorMsg.includes('USER_CANCEL')) {
+        console.log(`[2FA] User ${userId} cancelled password authentication`);
+        this.pendingPasswordAuth.delete(userId);
+        // Don't increment attempts for user cancellation
+        return { success: false, error: 'AUTH_USER_CANCEL', cancelled: true };
+      }
+
       // Check for flood wait errors and provide better error message
       if (isFloodWaitError(error)) {
         const waitSeconds = extractWaitTime(error);
@@ -2251,6 +2280,20 @@ class AccountLinker {
       const account = this.linkedAccounts.get(accountId.toString());
       if (!account || !account.client) {
         return { success: false, error: 'Account or client not found' };
+      }
+
+      // Check if user has premium subscription (skip tags for premium users)
+      if (account.userId) {
+        const isPremium = await premiumService.isPremium(account.userId);
+        if (isPremium) {
+          console.log(`[TAGS] Skipping tag application for premium user ${account.userId}, account ${accountId}`);
+          // Update tags_last_verified timestamp to indicate tags are "verified" (skipped)
+          await db.query(
+            'UPDATE accounts SET tags_last_verified = CURRENT_TIMESTAMP WHERE account_id = ?',
+            [accountId]
+          );
+          return { success: true, skipped: true, reason: 'Premium user - tags not required' };
+        }
       }
 
       const client = account.client;

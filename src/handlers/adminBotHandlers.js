@@ -318,45 +318,33 @@ function registerAdminCommands(bot) {
 
     const welcomeMessage = `👑 <b>Admin Bot</b>\n\n` +
       `Welcome, Admin!\n\n` +
-      `<b>📊 Statistics & Information:</b>\n` +
+      `<b>📊 Statistics:</b>\n` +
       `/stats - View bot statistics\n` +
-      `/users - List recent users (last 20)\n` +
-      `/accounts - List recent accounts (last 20)\n` +
+      `/users - List recent users\n` +
+      `/accounts - List recent accounts\n` +
       `/broadcasts - View active broadcasts\n` +
       `/groups - List groups by account\n` +
       `/database - Database statistics\n\n` +
-      `<b>👁️ Monitoring & Logs:</b>\n` +
-      `/logs - View recent logs (last 10)\n` +
+      `<b>👁️ Monitoring:</b>\n` +
+      `/logs - View recent logs\n` +
       `/logs_error - View error logs only\n` +
       `/logs_success - View success logs only\n` +
-      `/errors - View recent errors (last 10)\n` +
+      `/errors - View recent errors\n` +
       `/user &lt;id&gt; - Get user details\n` +
       `/account &lt;id&gt; - Get account details\n\n` +
-      `<b>⭐ Premium Management:</b>\n` +
-      `/premium_stats - Premium statistics\n` +
-      `/premium_list - List active premium subscriptions\n` +
-      `/premium_all - List all premium (all statuses)\n` +
-      `/premium_expiring - List expiring in 7 days\n` +
-      `/premium_user &lt;id&gt; - Get user premium status\n` +
-      `/premium_add &lt;id&gt; - Add premium (30 days default)\n` +
-      `/premium_set_date &lt;id&gt; &lt;YYYY-MM-DD&gt; - Set expiry date manually\n` +
-      `/premium_extend &lt;id&gt; &lt;days&gt; - Extend premium by days\n` +
-      `/premium_remove &lt;id&gt; - Remove/cancel premium\n` +
-      `/premium_update &lt;id&gt; &lt;amount&gt; - Update subscription amount\n\n` +
-      `<b>🎮 Broadcast Control:</b>\n` +
+      `<b>🎮 Control:</b>\n` +
       `/stop_broadcast &lt;user_id&gt; - Stop user's broadcast\n` +
       `/stop_all_broadcasts - Stop all broadcasts\n` +
+      `/notify &lt;message&gt; - Send notification to admins\n` +
       `/abroadcast &lt;message&gt; - Broadcast to all users\n` +
       `/abroadcast_last - Resend last broadcast\n\n` +
-      `<b>📢 Notifications:</b>\n` +
-      `/notify &lt;message&gt; - Send notification to admins\n\n` +
-      `<b>⚙️ System & Status:</b>\n` +
+      `<b>⚙️ System:</b>\n` +
       `/status - Bot health status\n` +
       `/uptime - Bot uptime information\n` +
       `/test - Test admin bot connection\n\n` +
-      `<b>❓ Help & Navigation:</b>\n` +
-      `/help - Show detailed help with descriptions\n` +
-      `/start - Show this welcome message`;
+      `<b>❓ Help:</b>\n` +
+      `/help - Show detailed help\n` +
+      `/start - Show this menu`;
 
     await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'HTML' });
   });
@@ -1244,45 +1232,33 @@ function registerAdminCommands(bot) {
       }
 
       const helpMessage = `👑 <b>Admin Bot Commands</b>\n\n` +
-        `<b>📊 Statistics & Information:</b>\n` +
-        `/stats - View bot statistics (users, accounts, broadcasts, groups, messages)\n` +
+        `<b>📊 Statistics:</b>\n` +
+        `/stats - View bot statistics\n` +
         `/users - List recent users (last 20)\n` +
         `/accounts - List recent accounts (last 20)\n` +
         `/broadcasts - View active broadcasts\n` +
-        `/groups - List groups by account (top 20)\n` +
-        `/database - Database statistics (all tables)\n\n` +
-        `<b>👁️ Monitoring & Logs:</b>\n` +
+        `/groups - List all groups\n` +
+        `/database - Database statistics\n\n` +
+        `<b>👁️ Monitoring:</b>\n` +
         `/logs - View recent logs (last 10)\n` +
-        `/logs_error - View error logs only (last 20)\n` +
-        `/logs_success - View success logs only (last 20)\n` +
+        `/logs_error - View error logs only\n` +
+        `/logs_success - View success logs only\n` +
         `/errors - View recent errors (last 10)\n` +
-        `/user &lt;id&gt; - Get detailed user information\n` +
-        `/account &lt;id&gt; - Get detailed account information\n\n` +
-        `<b>⭐ Premium Management:</b>\n` +
-        `/premium_stats - Premium subscription statistics\n` +
-        `/premium_list - List active premium subscriptions (last 15)\n` +
-        `/premium_all - List all premium subscriptions (all statuses, last 20)\n` +
-        `/premium_expiring - List subscriptions expiring in next 7 days\n` +
-        `/premium_user &lt;id&gt; - Get user premium status and details\n` +
-        `/premium_add &lt;id&gt; - Add premium subscription (30 days default)\n` +
-        `/premium_set_date &lt;id&gt; &lt;YYYY-MM-DD&gt; - Manually set expiry date\n` +
-        `/premium_extend &lt;id&gt; &lt;days&gt; - Extend premium by number of days\n` +
-        `/premium_remove &lt;id&gt; - Remove/cancel premium subscription\n` +
-        `/premium_update &lt;id&gt; &lt;amount&gt; - Update subscription amount\n\n` +
-        `<b>🎮 Broadcast Control:</b>\n` +
-        `/stop_broadcast &lt;user_id&gt; - Stop specific user's broadcast\n` +
-        `/stop_all_broadcasts - Stop all active broadcasts\n` +
-        `/abroadcast &lt;message&gt; - Broadcast message to all users\n` +
-        `/abroadcast_last - Resend last broadcast message\n\n` +
-        `<b>📢 Notifications:</b>\n` +
-        `/notify &lt;message&gt; - Send notification to all admins\n\n` +
-        `<b>⚙️ System & Status:</b>\n` +
-        `/status - Bot health status (uptime, memory, database, broadcasts)\n` +
-        `/uptime - Detailed uptime information\n` +
+      `/user &lt;id&gt; - Get user details\n` +
+      `/account &lt;id&gt; - Get account details\n\n` +
+      `<b>🎮 Control:</b>\n` +
+      `/stop_broadcast &lt;user_id&gt; - Stop user's broadcast\n` +
+      `/stop_all_broadcasts - Stop all active broadcasts\n` +
+      `/notify &lt;message&gt; - Send notification to all admins\n` +
+      `/abroadcast &lt;message&gt; - Broadcast to all users\n` +
+        `/abroadcast_last - Resend last broadcast\n\n` +
+        `<b>⚙️ System:</b>\n` +
+        `/status - Bot health status\n` +
+        `/uptime - Bot uptime information\n` +
         `/test - Test admin bot connection\n\n` +
-        `<b>❓ Help & Navigation:</b>\n` +
-        `/help - Show this detailed help message\n` +
-        `/start - Show welcome message with quick command overview`;
+        `<b>❓ Help:</b>\n` +
+        `/help - Show this help\n` +
+        `/start - Show welcome message`;
 
       await bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: 'HTML' });
     } catch (error) {
@@ -1548,294 +1524,6 @@ function registerAdminCommands(bot) {
           { parse_mode: 'HTML' }
         );
       }
-    } catch (error) {
-      const safeErrorMessage = sanitizeErrorMessage(error, false);
-      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
-    }
-  });
-
-  // /premium_set_date <user_id> <date> - Manually set expiry date (YYYY-MM-DD format)
-  bot.onText(/\/premium_set_date (.+)/, async (msg, match) => {
-    const adminUserId = validateUserId(msg.from?.id);
-    if (!adminUserId || !isAdmin(adminUserId)) {
-      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
-      return;
-    }
-
-    try {
-      const parts = match[1].trim().split(/\s+/);
-      if (parts.length < 2) {
-        await bot.sendMessage(
-          msg.chat.id,
-          '❌ <b>Invalid Format</b>\n\nUsage: <code>/premium_set_date &lt;user_id&gt; &lt;YYYY-MM-DD&gt;</code>\n\nExample: <code>/premium_set_date 123456789 2024-12-31</code>',
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
-
-      const targetUserId = validateUserId(parts[0]);
-      if (!targetUserId) {
-        await bot.sendMessage(msg.chat.id, '❌ Invalid user ID format');
-        return;
-      }
-
-      const dateStr = parts[1];
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-      if (!dateRegex.test(dateStr)) {
-        await bot.sendMessage(
-          msg.chat.id,
-          '❌ <b>Invalid Date Format</b>\n\nPlease use YYYY-MM-DD format.\n\nExample: <code>2024-12-31</code>',
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
-
-      const result = await premiumService.setExpiryDate(targetUserId, dateStr);
-
-      if (result.success) {
-        const expiresAt = new Date(result.subscription.expires_at);
-        const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
-          day: 'numeric', 
-          month: 'long', 
-          year: 'numeric' 
-        });
-        
-        const message = `╔═══════════════════════════╗
-║  ✅ <b>EXPIRY DATE SET</b>     ║
-╚═══════════════════════════╝
-
-👤 <b>User ID:</b> <code>${targetUserId}</code>
-📅 <b>New Expiry:</b> ${expiresAtFormatted}
-⏰ <b>Days Remaining:</b> ${result.subscription.daysRemaining || 0}
-
-<i>Premium subscription expiry date updated!</i>`;
-        
-        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-        logger.logChange('ADMIN_PREMIUM', adminUserId, `Set expiry date for user ${targetUserId} to ${dateStr}`);
-      } else {
-        await bot.sendMessage(
-          msg.chat.id, 
-          `❌ <b>Failed to Set Date</b>\n\n<code>${result.error}</code>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-    } catch (error) {
-      const safeErrorMessage = sanitizeErrorMessage(error, false);
-      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
-    }
-  });
-
-  // /premium_extend <user_id> <days> - Extend premium by X days
-  bot.onText(/\/premium_extend (.+)/, async (msg, match) => {
-    const adminUserId = validateUserId(msg.from?.id);
-    if (!adminUserId || !isAdmin(adminUserId)) {
-      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
-      return;
-    }
-
-    try {
-      const parts = match[1].trim().split(/\s+/);
-      if (parts.length < 2) {
-        await bot.sendMessage(
-          msg.chat.id,
-          '❌ <b>Invalid Format</b>\n\nUsage: <code>/premium_extend &lt;user_id&gt; &lt;days&gt;</code>\n\nExample: <code>/premium_extend 123456789 30</code>',
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
-
-      const targetUserId = validateUserId(parts[0]);
-      if (!targetUserId) {
-        await bot.sendMessage(msg.chat.id, '❌ Invalid user ID format');
-        return;
-      }
-
-      const days = parseInt(parts[1], 10);
-      if (isNaN(days) || days <= 0) {
-        await bot.sendMessage(msg.chat.id, '❌ Invalid number of days. Must be a positive integer.');
-        return;
-      }
-
-      const result = await premiumService.extendSubscription(targetUserId, days);
-
-      if (result.success) {
-        const expiresAt = new Date(result.subscription.expires_at);
-        const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
-          day: 'numeric', 
-          month: 'long', 
-          year: 'numeric' 
-        });
-        
-        const message = `╔═══════════════════════════╗
-║  ✅ <b>PREMIUM EXTENDED</b>    ║
-╚═══════════════════════════╝
-
-👤 <b>User ID:</b> <code>${targetUserId}</code>
-📅 <b>New Expiry:</b> ${expiresAtFormatted}
-⏰ <b>Days Added:</b> ${days}
-📊 <b>Days Remaining:</b> ${result.subscription.daysRemaining || 0}
-
-<i>Premium subscription extended successfully!</i>`;
-        
-        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-        logger.logChange('ADMIN_PREMIUM', adminUserId, `Extended premium for user ${targetUserId} by ${days} days`);
-      } else {
-        await bot.sendMessage(
-          msg.chat.id, 
-          `❌ <b>Failed to Extend Premium</b>\n\n<code>${result.error}</code>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-    } catch (error) {
-      const safeErrorMessage = sanitizeErrorMessage(error, false);
-      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
-    }
-  });
-
-  // /premium_remove <user_id> - Remove/cancel premium subscription
-  bot.onText(/\/premium_remove (.+)/, async (msg, match) => {
-    const adminUserId = validateUserId(msg.from?.id);
-    if (!adminUserId || !isAdmin(adminUserId)) {
-      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
-      return;
-    }
-
-    try {
-      const targetUserId = validateUserId(match[1]);
-      if (!targetUserId) {
-        await bot.sendMessage(msg.chat.id, '❌ Invalid user ID format');
-        return;
-      }
-
-      const result = await premiumService.removePremium(targetUserId);
-
-      if (result.success) {
-        const message = `╔═══════════════════════════╗
-║  ✅ <b>PREMIUM REMOVED</b>     ║
-╚═══════════════════════════╝
-
-👤 <b>User ID:</b> <code>${targetUserId}</code>
-
-<i>Premium subscription has been cancelled.</i>`;
-        
-        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-        logger.logChange('ADMIN_PREMIUM', adminUserId, `Removed premium for user ${targetUserId}`);
-      } else {
-        await bot.sendMessage(
-          msg.chat.id, 
-          `❌ <b>Failed to Remove Premium</b>\n\n<code>${result.error}</code>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-    } catch (error) {
-      const safeErrorMessage = sanitizeErrorMessage(error, false);
-      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
-    }
-  });
-
-  // /premium_update <user_id> <amount> - Update subscription amount
-  bot.onText(/\/premium_update (.+)/, async (msg, match) => {
-    const adminUserId = validateUserId(msg.from?.id);
-    if (!adminUserId || !isAdmin(adminUserId)) {
-      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
-      return;
-    }
-
-    try {
-      const parts = match[1].trim().split(/\s+/);
-      if (parts.length < 2) {
-        await bot.sendMessage(
-          msg.chat.id,
-          '❌ <b>Invalid Format</b>\n\nUsage: <code>/premium_update &lt;user_id&gt; &lt;amount&gt;</code>\n\nExample: <code>/premium_update 123456789 50</code>',
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
-
-      const targetUserId = validateUserId(parts[0]);
-      if (!targetUserId) {
-        await bot.sendMessage(msg.chat.id, '❌ Invalid user ID format');
-        return;
-      }
-
-      const amount = parseFloat(parts[1]);
-      if (isNaN(amount) || amount < 0) {
-        await bot.sendMessage(msg.chat.id, '❌ Invalid amount. Must be a positive number.');
-        return;
-      }
-
-      const result = await premiumService.updateAmount(targetUserId, amount);
-
-      if (result.success) {
-        const message = `╔═══════════════════════════╗
-║  ✅ <b>AMOUNT UPDATED</b>      ║
-╚═══════════════════════════╝
-
-👤 <b>User ID:</b> <code>${targetUserId}</code>
-💰 <b>New Amount:</b> ₹${amount}
-
-<i>Premium subscription amount updated!</i>`;
-        
-        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-        logger.logChange('ADMIN_PREMIUM', adminUserId, `Updated premium amount for user ${targetUserId} to ₹${amount}`);
-      } else {
-        await bot.sendMessage(
-          msg.chat.id, 
-          `❌ <b>Failed to Update Amount</b>\n\n<code>${result.error}</code>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-    } catch (error) {
-      const safeErrorMessage = sanitizeErrorMessage(error, false);
-      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
-    }
-  });
-
-  // /premium_all - List all premium subscriptions (all statuses)
-  bot.onText(/\/premium_all/, async (msg) => {
-    const adminUserId = validateUserId(msg.from?.id);
-    if (!adminUserId || !isAdmin(adminUserId)) {
-      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
-      return;
-    }
-
-    try {
-      const subscriptions = await premiumService.getAllSubscriptions();
-      
-      if (subscriptions.length === 0) {
-        await bot.sendMessage(msg.chat.id, '📭 No premium subscriptions found.');
-        return;
-      }
-
-      let message = `╔═══════════════════════════╗
-║  ⭐ <b>ALL PREMIUM</b>          ║
-║  <b>(${subscriptions.length} subscriptions)</b>  ║
-╚═══════════════════════════╝\n\n`;
-      
-      subscriptions.slice(0, 20).forEach((sub, index) => {
-        const expiresAt = new Date(sub.expires_at);
-        const now = new Date();
-        const daysRemaining = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
-        const statusEmoji = sub.status === 'active' ? '✅' : sub.status === 'expired' ? '❌' : '🚫';
-        const statusText = sub.status === 'active' ? 'ACTIVE' : sub.status === 'expired' ? 'EXPIRED' : 'CANCELLED';
-        
-        message += `┌─ <b>#${index + 1}</b> ───────────────────┐\n`;
-        message += `│ ${statusEmoji} <b>${sub.first_name || 'N/A'}</b> [${statusText}]\n`;
-        message += `│ 👤 @${sub.username || 'no_username'}\n`;
-        message += `│ 🆔 <code>${sub.user_id}</code>\n`;
-        message += `│ 📅 ${expiresAt.toLocaleDateString('en-IN')}\n`;
-        if (sub.status === 'active') {
-          message += `│ ⏰ ${daysRemaining} days remaining\n`;
-        }
-        message += `│ 💰 ₹${sub.amount}\n`;
-        message += `└────────────────────────────┘\n\n`;
-      });
-
-      if (subscriptions.length > 20) {
-        message += `\n<i>... and ${subscriptions.length - 20} more subscriptions</i>`;
-      }
-
-      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
     } catch (error) {
       const safeErrorMessage = sanitizeErrorMessage(error, false);
       await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);

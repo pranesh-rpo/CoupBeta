@@ -12,6 +12,13 @@ class BroadcastStatsService {
    */
   async recordStats(accountId, totalGroups, messagesSent, messagesFailed) {
     try {
+      // Validate account exists before recording stats (prevents foreign key constraint errors)
+      const accountCheck = await db.query('SELECT 1 FROM accounts WHERE account_id = $1', [accountId]);
+      if (accountCheck.rows.length === 0) {
+        console.log(`[STATS] Account ${accountId} not found, skipping stats recording`);
+        return { success: false, error: 'Account not found' };
+      }
+
       const today = new Date().toISOString().split('T')[0];
       const successRate = totalGroups > 0 ? ((messagesSent / totalGroups) * 100).toFixed(2) : 0;
       

@@ -24,9 +24,16 @@ class ConfigService {
           ab_mode,
           ab_mode_type,
           ab_last_variant,
-          saved_template_slot,
           auto_mention,
-          mention_count
+          mention_count,
+          group_delay_min,
+          group_delay_max,
+          forward_mode,
+          forward_message_id,
+          auto_reply_dm_enabled,
+          auto_reply_dm_message,
+          auto_reply_groups_enabled,
+          auto_reply_groups_message
          FROM accounts 
          WHERE account_id = $1`,
         [accountId]
@@ -47,9 +54,16 @@ class ConfigService {
         abMode: row.ab_mode || false,
         abModeType: row.ab_mode_type || 'single',
         abLastVariant: row.ab_last_variant || 'A',
-        savedTemplateSlot: row.saved_template_slot !== null && row.saved_template_slot !== undefined ? row.saved_template_slot : null,
         autoMention: row.auto_mention || false,
         mentionCount: [1, 3, 5].includes(row.mention_count) ? row.mention_count : 5,
+        groupDelayMin: row.group_delay_min,
+        groupDelayMax: row.group_delay_max,
+        forwardMode: row.forward_mode === 1, // Convert INTEGER to boolean
+        forwardMessageId: row.forward_message_id,
+        autoReplyDmEnabled: row.auto_reply_dm_enabled === 1,
+        autoReplyDmMessage: row.auto_reply_dm_message,
+        autoReplyGroupsEnabled: row.auto_reply_groups_enabled === 1,
+        autoReplyGroupsMessage: row.auto_reply_groups_message,
       };
     } catch (error) {
       logger.logError('CONFIG', null, error, `Failed to get account settings for account ${accountId}`);
@@ -238,21 +252,63 @@ class ConfigService {
    * @param {number} accountId - Account ID
    * @param {number|null} slot - Slot number (1, 2, 3) or null for none
    */
-  async setSavedTemplateSlot(accountId, slot) {
+  /**
+   * Set group delay (delay between sending to different groups)
+   * @param {number} accountId - Account ID
+   * @param {number|null} minSeconds - Minimum delay in seconds (null to use default)
+   * @param {number|null} maxSeconds - Maximum delay in seconds (null to use default)
+   */
+  async setGroupDelay(accountId, minSeconds, maxSeconds) {
     try {
-      if (slot !== null && ![1, 2, 3].includes(slot)) {
-        return { success: false, error: 'Invalid slot number' };
-      }
-      
       await db.query(
-        'UPDATE accounts SET saved_template_slot = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2',
-        [slot, accountId]
+        'UPDATE accounts SET group_delay_min = $1, group_delay_max = $2, updated_at = CURRENT_TIMESTAMP WHERE account_id = $3',
+        [minSeconds, maxSeconds, accountId]
       );
       
-      logger.logChange('CONFIG', accountId, `Saved template slot set to ${slot || 'none'}`);
+      logger.logChange('CONFIG', accountId, `Group delay set to ${minSeconds || 'default'}-${maxSeconds || 'default'} seconds`);
       return { success: true };
     } catch (error) {
-      logger.logError('CONFIG', accountId, error, 'Failed to set saved template slot');
+      logger.logError('CONFIG', accountId, error, 'Failed to set group delay');
+      throw error;
+    }
+  }
+
+  /**
+   * Set forward mode (enable/disable forwarding messages from Saved Messages)
+   * @param {number} accountId - Account ID
+   * @param {boolean} enabled - Whether forward mode is enabled
+   */
+  async setForwardMode(accountId, enabled) {
+    try {
+      await db.query(
+        'UPDATE accounts SET forward_mode = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2',
+        [enabled ? 1 : 0, accountId]
+      );
+      
+      logger.logChange('CONFIG', accountId, `Forward mode ${enabled ? 'enabled' : 'disabled'}`);
+      return { success: true };
+    } catch (error) {
+      logger.logError('CONFIG', accountId, error, 'Failed to set forward mode');
+      throw error;
+    }
+  }
+
+  /**
+   * Set forward message ID (ID of message in Saved Messages to forward)
+   * @param {number} accountId - Account ID
+   * @param {number|null} messageId - Message ID in Saved Messages (null to clear)
+   */
+  async setForwardMessageId(accountId, messageId) {
+    try {
+      await db.query(
+        'UPDATE accounts SET forward_message_id = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2',
+        [messageId, accountId]
+      );
+      
+      logger.logChange('CONFIG', accountId, `Forward message ID set to ${messageId || 'none'}`);
+      return { success: true };
+    } catch (error) {
+      logger.logError('CONFIG', accountId, error, 'Failed to set forward message ID');
       throw error;
     }
   }
@@ -433,6 +489,44 @@ class ConfigService {
     } catch (error) {
       logger.logError('CONFIG', accountId, error, 'Failed to check schedule');
       return true; // Default to active if check fails
+    }
+  }
+
+  /**
+   * Set auto reply DM settings
+   */
+  async setAutoReplyDm(accountId, enabled, message = null) {
+    try {
+      await db.query(
+        `UPDATE accounts 
+         SET auto_reply_dm_enabled = $1, auto_reply_dm_message = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE account_id = $3`,
+        [enabled ? 1 : 0, message, accountId]
+      );
+      logger.logChange('CONFIG', accountId, `Auto reply DM ${enabled ? 'enabled' : 'disabled'}`);
+      return { success: true };
+    } catch (error) {
+      logger.logError('CONFIG', accountId, error, 'Failed to set auto reply DM');
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set auto reply groups settings
+   */
+  async setAutoReplyGroups(accountId, enabled, message = null) {
+    try {
+      await db.query(
+        `UPDATE accounts 
+         SET auto_reply_groups_enabled = $1, auto_reply_groups_message = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE account_id = $3`,
+        [enabled ? 1 : 0, message, accountId]
+      );
+      logger.logChange('CONFIG', accountId, `Auto reply groups ${enabled ? 'enabled' : 'disabled'}`);
+      return { success: true };
+    } catch (error) {
+      logger.logError('CONFIG', accountId, error, 'Failed to set auto reply groups');
+      return { success: false, error: error.message };
     }
   }
 }

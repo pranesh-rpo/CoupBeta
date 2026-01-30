@@ -6,6 +6,7 @@
 import accountLinker from '../services/accountLinker.js';
 import configService from '../services/configService.js';
 import userService from '../services/userService.js';
+import groupBlacklistService from '../services/groupBlacklistService.js';
 import { config } from '../config.js';
 import logger from '../utils/logger.js';
 import { safeEditMessage, safeAnswerCallback } from '../utils/safeEdit.js';
@@ -19,7 +20,7 @@ function createChannelButtonsKeyboard(channelUsernames) {
   
   // Create buttons: Verify button on first row, then one button per channel
   const keyboard = [
-    [{ text: '✅ Verify Channel', callback_data: 'btn_verify_channel' }]
+    [{ text: '✅ Verify', callback_data: 'btn_verify_channel' }]
   ];
   
   // Add one button per channel
@@ -44,7 +45,7 @@ To use this bot, you must join our updates channel(s) first.
 
 ${channelList}
 
-After joining, click the "✅ Verify Channel" button below.
+After joining, click the "✅ Verify" button below.
   `;
   
   return await bot.sendMessage(chatId, verificationMessage, {
@@ -99,22 +100,36 @@ export async function handleConfigButton(bot, callbackQuery) {
   const quietHours = settings?.quietStart && settings?.quietEnd 
     ? { start: settings.quietStart, end: settings.quietEnd }
     : null;
-
-  const autoMentionText = settings?.autoMention ? `Enabled (${settings.mentionCount || 5} users)` : 'Disabled';
   
-  const configMessage = `⚙️ <b>Account Configuration</b>\n\n` +
-    `📱 Account: ${(await accountLinker.getAccounts(userId)).find(a => a.accountId === accountId)?.phone || 'Unknown'}\n\n` +
-    `⏱️ Custom Interval: ${currentInterval} minutes\n` +
-    `🌙 Quiet Hours: ${quietHours ? `${quietHours.start} - ${quietHours.end}` : 'Not set'}\n` +
-    `🔄 A/B Testing: ${settings?.abMode ? settings.abModeType.charAt(0).toUpperCase() + settings.abModeType.slice(1) : 'Disabled'}\n\n` +
-    `Select an option to configure:`;
+  const groupDelayText = settings?.groupDelayMin !== null && settings?.groupDelayMax !== null
+    ? `${settings.groupDelayMin}-${settings.groupDelayMax}s`
+    : 'Default (5-10s)';
+  
+  const forwardModeText = settings?.forwardMode ? '🟢 Enabled' : '⚪ Disabled';
+  const abModeText = settings?.abMode ? `${settings.abModeType.charAt(0).toUpperCase() + settings.abModeType.slice(1)}` : 'Disabled';
+
+  const autoReplyDmText = settings?.autoReplyDmEnabled ? '🟢 Enabled' : '⚪ Disabled';
+  const autoReplyGroupsText = settings?.autoReplyGroupsEnabled ? '🟢 Enabled' : '⚪ Disabled';
+  const blacklistCount = (await groupBlacklistService.getBlacklistedGroups(accountId)).groups?.length || 0;
+
+  const accountPhone = (await accountLinker.getAccounts(userId)).find(a => a.accountId === accountId)?.phone || 'Unknown';
+  const configMessage = `⚙️ <b>Settings</b>\n\n` +
+    `📱 <b>Account:</b> ${accountPhone}\n\n` +
+    `⏱️ <b>Broadcast Interval:</b> ${currentInterval} min\n` +
+    `⏳ <b>Group Delay:</b> ${groupDelayText}\n` +
+    `📤 <b>Forward Mode:</b> ${forwardModeText}\n` +
+    `🔄 <b>A/B Testing:</b> ${abModeText}\n` +
+    `🌙 <b>Quiet Hours:</b> ${quietHours ? `${quietHours.start} - ${quietHours.end}` : 'Not set'}\n` +
+    `🚫 <b>Group Blacklist:</b> ${blacklistCount} group(s)\n` +
+    `💬 <b>Auto Reply DM:</b> ${autoReplyDmText}\n` +
+    `💬 <b>Auto Reply Groups:</b> ${autoReplyGroupsText}`;
 
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
     configMessage,
-    { parse_mode: 'HTML', ...createConfigMenu(currentInterval, quietHours, settings?.abMode || false, settings?.abModeType || 'single') }
+    { parse_mode: 'HTML', ...createConfigMenu(currentInterval, quietHours, settings?.abMode || false, settings?.abModeType || 'single', settings?.groupDelayMin, settings?.groupDelayMax, settings?.forwardMode || false) }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
@@ -143,8 +158,8 @@ export async function handleConfigCustomInterval(bot, callbackQuery) {
   const settings = await configService.getAccountSettings(accountId);
   const currentInterval = settings?.manualInterval || 11; // Default 11 minutes
 
-  const intervalMessage = `⏱️ <b>Custom Broadcast Interval</b>\n\n` +
-    `Set the interval between broadcast cycles (minimum: 11 minutes).\n\n` +
+  const intervalMessage = `⏱️ <b>Broadcast Interval</b>\n\n` +
+    `Set the time between each broadcast cycle (minimum: 11 minutes).\n\n` +
     `<b>Current interval:</b> ${currentInterval} minutes\n\n` +
     `Please enter the interval in minutes (e.g., 15, 30, 60):`;
 
@@ -172,7 +187,7 @@ export async function handleCustomIntervalInput(bot, msg, accountId) {
   if (!text) {
     await bot.sendMessage(
       chatId,
-      `⏱️ <b>Custom Broadcast Interval</b>\n\nPlease enter the interval in minutes (minimum: 11 minutes).\n\nExample: 15, 30, 60\n\nSend your interval now:`,
+      `⏱️ <b>Broadcast Interval</b>\n\nPlease enter the interval in minutes (minimum: 11 minutes).\n\nExample: 15, 30, 60\n\nSend your interval now:`,
       { parse_mode: 'HTML', ...createBackButton() }
     );
     return false; // Keep pending state
@@ -209,13 +224,13 @@ export async function handleCustomIntervalInput(bot, msg, accountId) {
   if (result.success) {
     await bot.sendMessage(
       chatId,
-      `✅ <b>Custom Interval Set Successfully!</b>\n\n⏱️ <b>Interval:</b> ${intervalMinutes} minutes`,
+      `✅ <b>Broadcast Interval Set!</b>\n\n⏱️ <b>Interval:</b> ${intervalMinutes} minutes\n\nYour broadcasts will run every ${intervalMinutes} minutes.`,
       { parse_mode: 'HTML', ...await createMainMenu(userId) }
     );
     console.log(`[CUSTOM_INTERVAL] User ${userId} successfully set interval to ${intervalMinutes} minutes`);
     return true; // Success - clear pending state
   } else {
-    let errorMessage = `❌ <b>Failed to Set Interval</b>\n\n<b>Error:</b> ${result.error}\n\n`;
+     let errorMessage = `❌ <b>Failed to Set Broadcast Interval</b>\n\n<b>Error:</b> ${result.error}\n\n`;
     
     await bot.sendMessage(
       chatId,
@@ -224,6 +239,197 @@ export async function handleCustomIntervalInput(bot, msg, accountId) {
     );
     console.log(`[CUSTOM_INTERVAL] User ${userId} failed to set interval: ${result.error}`);
     return false; // Keep pending state so user can retry
+  }
+}
+
+/**
+ * Handle group delay configuration button
+ */
+export async function handleConfigGroupDelay(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Config Group Delay', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const currentMin = settings?.groupDelayMin;
+  const currentMax = settings?.groupDelayMax;
+  const currentText = currentMin !== null && currentMax !== null
+    ? `${currentMin}-${currentMax} seconds`
+    : 'Default (5-10 seconds)';
+
+  const delayMessage = `⏳ <b>Group Delay Configuration</b>\n\n` +
+    `Set the delay between sending messages to different groups (in seconds).\n\n` +
+    `<b>Current delay:</b> ${currentText}\n\n` +
+    `Please enter the delay range in format: <code>min-max</code>\n\n` +
+    `Examples:\n` +
+    `• <code>5-10</code> for 5 to 10 seconds\n` +
+    `• <code>3-7</code> for 3 to 7 seconds\n` +
+    `• <code>default</code> to use default (5-10 seconds)\n\n` +
+    `Minimum: 1 second, Maximum: 300 seconds`;
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    delayMessage,
+    { parse_mode: 'HTML', ...createBackButton() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId }; // Return accountId for pending state
+}
+
+/**
+ * Handle group delay input
+ */
+export async function handleGroupDelayInput(bot, msg, accountId) {
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+
+  const text = msg.text?.trim().toLowerCase();
+  
+  if (!text) {
+    await bot.sendMessage(
+      chatId,
+      `⏳ <b>Group Delay Configuration</b>\n\nPlease enter the delay range in format: <code>min-max</code>\n\nExamples:\n• <code>5-10</code> for 5 to 10 seconds\n• <code>default</code> to use default\n\nSend your delay range now:`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false; // Keep pending state
+  }
+
+  // Handle "default" to reset
+  if (text === 'default') {
+    const result = await configService.setGroupDelay(accountId, null, null);
+    
+    if (result.success) {
+      await bot.sendMessage(
+        chatId,
+        `✅ <b>Group Delay Reset to Default</b>\n\n⏳ Using default delay: 5-10 seconds`,
+        { parse_mode: 'HTML', ...await createMainMenu(userId) }
+      );
+      logger.logChange('CONFIG', userId, 'Group delay reset to default');
+      return true; // Success - clear pending state
+    } else {
+      await bot.sendMessage(
+        chatId,
+        `❌ <b>Failed to Reset Delay</b>\n\n<b>Error:</b> ${result.error}\n\nTry again:`,
+        { parse_mode: 'HTML', ...createBackButton() }
+      );
+      return false; // Keep pending state
+    }
+  }
+
+  // Parse delay range (format: min-max)
+  const rangeMatch = text.match(/^(\d+)-(\d+)$/);
+  if (!rangeMatch) {
+    await bot.sendMessage(
+      chatId,
+      `❌ Invalid format. Please use format: <code>min-max</code>\n\nExamples:\n• <code>5-10</code> for 5 to 10 seconds\n• <code>3-7</code> for 3 to 7 seconds\n\nTry again:`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false; // Keep pending state
+  }
+
+  const minSeconds = parseInt(rangeMatch[1], 10);
+  const maxSeconds = parseInt(rangeMatch[2], 10);
+
+  if (isNaN(minSeconds) || isNaN(maxSeconds) || minSeconds < 1 || maxSeconds < 1) {
+    await bot.sendMessage(
+      chatId,
+      `❌ Invalid values. Minimum and maximum must be at least 1 second.\n\nTry again:`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false; // Keep pending state
+  }
+
+  if (minSeconds > maxSeconds) {
+    await bot.sendMessage(
+      chatId,
+      `❌ Invalid range. Minimum (${minSeconds}) cannot be greater than maximum (${maxSeconds}).\n\nTry again:`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false; // Keep pending state
+  }
+
+  if (minSeconds > 300 || maxSeconds > 300) {
+    await bot.sendMessage(
+      chatId,
+      `❌ Values too large. Maximum delay is 300 seconds (5 minutes).\n\nTry again:`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false; // Keep pending state
+  }
+
+  logger.logChange('CONFIG', userId, `Group delay set to ${minSeconds}-${maxSeconds} seconds`);
+  const result = await configService.setGroupDelay(accountId, minSeconds, maxSeconds);
+  
+  if (result.success) {
+    await bot.sendMessage(
+      chatId,
+      `✅ <b>Group Delay Set Successfully!</b>\n\n⏳ <b>Delay Range:</b> ${minSeconds}-${maxSeconds} seconds\n\nMessages will wait a random delay between ${minSeconds} and ${maxSeconds} seconds before sending to the next group.`,
+      { parse_mode: 'HTML', ...await createMainMenu(userId) }
+    );
+    console.log(`[GROUP_DELAY] User ${userId} successfully set delay to ${minSeconds}-${maxSeconds} seconds`);
+    return true; // Success - clear pending state
+  } else {
+    await bot.sendMessage(
+      chatId,
+      `❌ <b>Failed to Set Delay</b>\n\n<b>Error:</b> ${result.error}\n\nTry again:`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    console.log(`[GROUP_DELAY] User ${userId} failed to set delay: ${result.error}`);
+    return false; // Keep pending state
+  }
+}
+
+/**
+ * Handle forward mode toggle
+ */
+export async function handleConfigForwardMode(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Config Forward Mode', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const currentForwardMode = settings?.forwardMode || false;
+  const newForwardMode = !currentForwardMode;
+
+  const result = await configService.setForwardMode(accountId, newForwardMode);
+
+  if (result.success) {
+    // Refresh config menu
+    await handleConfigButton(bot, callbackQuery);
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: `Forward mode ${newForwardMode ? 'enabled' : 'disabled'}`,
+      show_alert: false,
+    });
+  } else {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: `Failed to update forward mode: ${result.error}`,
+      show_alert: true,
+    });
   }
 }
 
@@ -484,7 +690,8 @@ export async function handleQuietHoursInput(bot, msg, accountId) {
         chatId,
         `✅ <b>Quiet Hours Set Successfully!</b>\n\n` +
         `🌙 <b>Time Window:</b> ${startTime} - ${endTime} IST\n` +
-        `📊 <b>Status:</b> Active`,
+        `📊 <b>Status:</b> Active\n\n` +
+        `💡 Broadcasting will be automatically paused during these hours.`,
         { parse_mode: 'HTML', ...createMainMenu() }
       );
     } else {
@@ -660,7 +867,7 @@ export async function handleConfigMention(bot, callbackQuery) {
             { text: '3 users', callback_data: 'config_mention_count_3' },
             { text: '5 users', callback_data: 'config_mention_count_5' }
           ],
-          [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }],
+          [{ text: '◀️ Back to Menu', callback_data: 'btn_main_menu' }],
         ],
       },
     }
@@ -948,7 +1155,8 @@ export async function handleScheduleInput(bot, msg, accountId) {
         chatId,
         `✅ <b>Schedule Set Successfully!</b>\n\n` +
         `⏰ <b>Time Window:</b> ${startTime} - ${endTime} IST\n` +
-        `📊 <b>Status:</b> Active`,
+        `📊 <b>Status:</b> Active\n\n` +
+        `💡 Broadcasting will only occur during this time window. You can start broadcasts anytime, but messages will only be sent during the schedule.`,
         { parse_mode: 'HTML', ...createMainMenu() }
       );
     } else {
@@ -965,5 +1173,558 @@ export async function handleScheduleInput(bot, msg, accountId) {
       `❌ An unexpected error occurred: ${error.message}\n\nPlease try again.`,
       { parse_mode: 'HTML', ...createBackButton() }
     );
+  }
+}
+
+/**
+ * Handle group blacklist button
+ */
+export async function handleConfigGroupBlacklist(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Config Group Blacklist', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const blacklisted = await groupBlacklistService.getBlacklistedGroups(accountId);
+  const blacklistCount = blacklisted.groups?.length || 0;
+
+  let message = `🚫 <b>Group Blacklist</b>\n\n`;
+  message += `Blacklisted groups: <b>${blacklistCount}</b>\n\n`;
+  message += `Search for groups by keyword to add them to the blacklist.\n`;
+  message += `Blacklisted groups will be excluded from broadcasts.`;
+
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '🔍 Search Groups', callback_data: 'btn_blacklist_search' }],
+      blacklistCount > 0 ? [{ text: '📋 View Blacklist', callback_data: 'btn_blacklist_view' }] : [],
+      [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+    ],
+  };
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    message,
+    { parse_mode: 'HTML', reply_markup: keyboard }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId };
+}
+
+/**
+ * Handle blacklist search button
+ */
+export async function handleBlacklistSearch(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    '🔍 <b>Search Groups</b>\n\nEnter a keyword to search for groups:',
+    { parse_mode: 'HTML', ...createBackButton() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId };
+}
+
+/**
+ * Handle blacklist search input
+ */
+export async function handleBlacklistSearchInput(bot, msg, accountId) {
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+
+  const keyword = msg.text?.trim();
+  if (!keyword || keyword.length < 2) {
+    await bot.sendMessage(
+      chatId,
+      '❌ Please enter at least 2 characters to search.',
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false;
+  }
+
+  const result = await groupBlacklistService.searchGroups(accountId, keyword);
+  
+  if (!result.success || result.groups.length === 0) {
+    await bot.sendMessage(
+      chatId,
+      `❌ No groups found matching "${keyword}"\n\nTry a different keyword.`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false;
+  }
+
+  // Create buttons for each group (max 10)
+  const groups = result.groups.slice(0, 10);
+  const keyboard = {
+    inline_keyboard: groups.map(group => [
+      { 
+        text: group.group_title || `Group ${group.group_id}`, 
+        callback_data: `blacklist_add_${group.group_id}` 
+      }
+    ]).concat([
+      [{ text: '🔙 Back', callback_data: 'btn_config_blacklist' }]
+    ]),
+  };
+
+  await bot.sendMessage(
+    chatId,
+    `🔍 <b>Search Results</b>\n\nFound <b>${groups.length}</b> group(s) matching "${keyword}":\n\nSelect a group to add to blacklist:`,
+    { parse_mode: 'HTML', reply_markup: keyboard }
+  );
+  return true;
+}
+
+/**
+ * Handle add to blacklist
+ */
+export async function handleBlacklistAdd(bot, callbackQuery, groupId) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const result = await groupBlacklistService.addToBlacklist(accountId, groupId);
+  
+  if (result.success) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: `✅ Added "${result.groupTitle}" to blacklist`,
+      show_alert: true,
+    });
+    
+    // Refresh blacklist view
+    await handleConfigGroupBlacklist(bot, callbackQuery);
+  } else {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: result.error || 'Failed to add to blacklist',
+      show_alert: true,
+    });
+  }
+}
+
+/**
+ * Handle view blacklist
+ */
+export async function handleBlacklistView(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const result = await groupBlacklistService.getBlacklistedGroups(accountId);
+  
+  if (!result.success || result.groups.length === 0) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No groups in blacklist',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const groups = result.groups;
+  const keyboard = {
+    inline_keyboard: groups.map(group => [
+      { 
+        text: `❌ ${group.group_title || `Group ${group.group_id}`}`, 
+        callback_data: `blacklist_remove_${group.group_id}` 
+      }
+    ]).concat([
+      [{ text: '🔙 Back', callback_data: 'btn_config_blacklist' }]
+    ]),
+  };
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    `📋 <b>Blacklisted Groups</b>\n\nTotal: <b>${groups.length}</b>\n\nClick to remove from blacklist:`,
+    { parse_mode: 'HTML', reply_markup: keyboard }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+}
+
+/**
+ * Handle remove from blacklist
+ */
+export async function handleBlacklistRemove(bot, callbackQuery, groupId) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const result = await groupBlacklistService.removeFromBlacklist(accountId, groupId);
+  
+  if (result.success) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: '✅ Removed from blacklist',
+      show_alert: true,
+    });
+    
+    // Refresh blacklist view
+    await handleBlacklistView(bot, callbackQuery);
+  } else {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: result.error || 'Failed to remove from blacklist',
+      show_alert: true,
+    });
+  }
+}
+
+/**
+ * Handle auto reply DM configuration
+ */
+export async function handleConfigAutoReplyDm(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Config Auto Reply DM', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const enabled = settings?.autoReplyDmEnabled || false;
+  const message = settings?.autoReplyDmMessage || 'Not set';
+
+  let configMessage = `💬 <b>Auto Reply to DM</b>\n\n`;
+  configMessage += `Status: ${enabled ? '🟢 Enabled' : '⚪ Disabled'}\n`;
+  configMessage += `Message: ${message !== 'Not set' ? message.substring(0, 50) + (message.length > 50 ? '...' : '') : 'Not set'}\n\n`;
+  configMessage += `When enabled, the bot will automatically reply to direct messages.`;
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: enabled ? '⚪ Disable' : '🟢 Enable', callback_data: `auto_reply_dm_toggle_${!enabled}` }
+      ],
+      message !== 'Not set' ? [
+        { text: '✏️ Edit Message', callback_data: 'auto_reply_dm_set_message' }
+      ] : [
+        { text: '✏️ Set Message', callback_data: 'auto_reply_dm_set_message' }
+      ],
+      [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+    ],
+  };
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    configMessage,
+    { parse_mode: 'HTML', reply_markup: keyboard }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId };
+}
+
+/**
+ * Handle auto reply DM toggle
+ */
+export async function handleAutoReplyDmToggle(bot, callbackQuery, enabled) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const currentMessage = settings?.autoReplyDmMessage;
+
+  const result = await configService.setAutoReplyDm(accountId, enabled, currentMessage);
+  
+  if (result.success) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: enabled ? '✅ Auto reply DM enabled' : '✅ Auto reply DM disabled',
+      show_alert: true,
+    });
+    await handleConfigAutoReplyDm(bot, callbackQuery);
+  } else {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: result.error || 'Failed to update settings',
+      show_alert: true,
+    });
+  }
+}
+
+/**
+ * Handle auto reply DM set message
+ */
+export async function handleAutoReplyDmSetMessage(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    '💬 <b>Set Auto Reply DM Message</b>\n\nSend the message to use for auto replies to direct messages:',
+    { parse_mode: 'HTML', ...createBackButton() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId };
+}
+
+/**
+ * Handle auto reply DM message input
+ */
+export async function handleAutoReplyDmMessageInput(bot, msg, accountId) {
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+
+  const message = msg.text?.trim();
+  if (!message) {
+    await bot.sendMessage(
+      chatId,
+      '❌ Please send a valid message.',
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const enabled = settings?.autoReplyDmEnabled || false;
+
+  const result = await configService.setAutoReplyDm(accountId, enabled, message);
+  
+  if (result.success) {
+    await bot.sendMessage(
+      chatId,
+      '✅ Auto reply DM message set successfully!',
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return true;
+  } else {
+    await bot.sendMessage(
+      chatId,
+      `❌ Failed to set message: ${result.error}`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false;
+  }
+}
+
+/**
+ * Handle auto reply groups configuration
+ */
+export async function handleConfigAutoReplyGroups(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Config Auto Reply Groups', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const enabled = settings?.autoReplyGroupsEnabled || false;
+  const message = settings?.autoReplyGroupsMessage || 'Not set';
+
+  let configMessage = `💬 <b>Auto Reply in Groups</b>\n\n`;
+  configMessage += `Status: ${enabled ? '🟢 Enabled' : '⚪ Disabled'}\n`;
+  configMessage += `Message: ${message !== 'Not set' ? message.substring(0, 50) + (message.length > 50 ? '...' : '') : 'Not set'}\n\n`;
+  configMessage += `When enabled, the bot will automatically reply to messages in groups.`;
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: enabled ? '⚪ Disable' : '🟢 Enable', callback_data: `auto_reply_groups_toggle_${!enabled}` }
+      ],
+      message !== 'Not set' ? [
+        { text: '✏️ Edit Message', callback_data: 'auto_reply_groups_set_message' }
+      ] : [
+        { text: '✏️ Set Message', callback_data: 'auto_reply_groups_set_message' }
+      ],
+      [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+    ],
+  };
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    configMessage,
+    { parse_mode: 'HTML', reply_markup: keyboard }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId };
+}
+
+/**
+ * Handle auto reply groups toggle
+ */
+export async function handleAutoReplyGroupsToggle(bot, callbackQuery, enabled) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const currentMessage = settings?.autoReplyGroupsMessage;
+
+  const result = await configService.setAutoReplyGroups(accountId, enabled, currentMessage);
+  
+  if (result.success) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: enabled ? '✅ Auto reply groups enabled' : '✅ Auto reply groups disabled',
+      show_alert: true,
+    });
+    await handleConfigAutoReplyGroups(bot, callbackQuery);
+  } else {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: result.error || 'Failed to update settings',
+      show_alert: true,
+    });
+  }
+}
+
+/**
+ * Handle auto reply groups set message
+ */
+export async function handleAutoReplyGroupsSetMessage(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    '💬 <b>Set Auto Reply Groups Message</b>\n\nSend the message to use for auto replies in groups:',
+    { parse_mode: 'HTML', ...createBackButton() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
+  return { accountId };
+}
+
+/**
+ * Handle auto reply groups message input
+ */
+export async function handleAutoReplyGroupsMessageInput(bot, msg, accountId) {
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+
+  const message = msg.text?.trim();
+  if (!message) {
+    await bot.sendMessage(
+      chatId,
+      '❌ Please send a valid message.',
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const enabled = settings?.autoReplyGroupsEnabled || false;
+
+  const result = await configService.setAutoReplyGroups(accountId, enabled, message);
+  
+  if (result.success) {
+    await bot.sendMessage(
+      chatId,
+      '✅ Auto reply groups message set successfully!',
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return true;
+  } else {
+    await bot.sendMessage(
+      chatId,
+      `❌ Failed to set message: ${result.error}`,
+      { parse_mode: 'HTML', ...createBackButton() }
+    );
+    return false;
   }
 }

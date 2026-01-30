@@ -159,10 +159,6 @@ import {
   handleABSetMessage,
   handleABMessageInput,
   handleABViewMessages,
-  handleSavedTemplatesButton,
-  handleTemplateSync,
-  handleTemplateSelect,
-  handleTemplateClear,
   handleApplyTags,
   handlePremium,
   handlePremiumFAQ,
@@ -177,6 +173,9 @@ import {
   handleConfigButton,
   handleConfigCustomInterval,
   handleCustomIntervalInput,
+  handleConfigGroupDelay,
+  handleGroupDelayInput,
+  handleConfigForwardMode,
   handleConfigQuietHours,
   handleQuietHoursSet,
   handleQuietHoursView,
@@ -192,6 +191,20 @@ import {
   handleConfigMention,
   handleConfigMentionToggle,
   handleConfigMentionCount,
+  handleConfigGroupBlacklist,
+  handleBlacklistSearch,
+  handleBlacklistSearchInput,
+  handleBlacklistAdd,
+  handleBlacklistView,
+  handleBlacklistRemove,
+  handleConfigAutoReplyDm,
+  handleAutoReplyDmToggle,
+  handleAutoReplyDmSetMessage,
+  handleAutoReplyDmMessageInput,
+  handleConfigAutoReplyGroups,
+  handleAutoReplyGroupsToggle,
+  handleAutoReplyGroupsSetMessage,
+  handleAutoReplyGroupsMessageInput,
 } from './handlers/configHandlers.js';
 import {
   handleStatsButton,
@@ -542,6 +555,10 @@ const pendingQuietHoursInputs = new Map(); // userId -> { accountId, type: 'star
 const pendingABMessages = new Map(); // userId -> { accountId, variant: 'A' | 'B' }
 const pendingScheduleInputs = new Map(); // userId -> { accountId, type: 'schedule' }
 const pendingCustomIntervalInputs = new Map(); // userId -> { accountId }
+const pendingGroupDelayInputs = new Map(); // userId -> { accountId }
+const pendingBlacklistSearchInputs = new Map(); // userId -> { accountId }
+const pendingAutoReplyDmMessageInputs = new Map(); // userId -> { accountId }
+const pendingAutoReplyGroupsMessageInputs = new Map(); // userId -> { accountId }
 
 // Set the reference in commandHandler so it can set pending state when redirecting to link
 setPendingPhoneNumbersReference(pendingPhoneNumbers);
@@ -1187,6 +1204,18 @@ bot.on('message', async (msg) => {
     const { accountId } = pendingData;
     pendingScheduleInputs.delete(userId);
     await handleScheduleInput(bot, msg, accountId);
+  } else if (pendingGroupDelayInputs.has(userId)) {
+    const pendingData = pendingGroupDelayInputs.get(userId);
+    if (!pendingData || !pendingData.accountId) {
+      // Invalid state, clear it
+      pendingGroupDelayInputs.delete(userId);
+      return;
+    }
+    const accountId = pendingData.accountId;
+    const result = await handleGroupDelayInput(bot, msg, accountId);
+    if (result) {
+      pendingGroupDelayInputs.delete(userId);
+    }
   } else if (pendingCustomIntervalInputs.has(userId)) {
     const pendingData = pendingCustomIntervalInputs.get(userId);
     if (!pendingData || !pendingData.accountId) {
@@ -1202,6 +1231,39 @@ bot.on('message', async (msg) => {
       logger.logChange('CUSTOM_INTERVAL', userId, 'Custom interval input completed');
     } else {
       logger.logChange('CUSTOM_INTERVAL', userId, 'Custom interval input still pending (retry needed)');
+    }
+  } else if (pendingBlacklistSearchInputs.has(userId)) {
+    const pendingData = pendingBlacklistSearchInputs.get(userId);
+    if (!pendingData || !pendingData.accountId) {
+      pendingBlacklistSearchInputs.delete(userId);
+      return;
+    }
+    const accountId = pendingData.accountId;
+    const result = await handleBlacklistSearchInput(bot, msg, accountId);
+    if (result) {
+      pendingBlacklistSearchInputs.delete(userId);
+    }
+  } else if (pendingAutoReplyDmMessageInputs.has(userId)) {
+    const pendingData = pendingAutoReplyDmMessageInputs.get(userId);
+    if (!pendingData || !pendingData.accountId) {
+      pendingAutoReplyDmMessageInputs.delete(userId);
+      return;
+    }
+    const accountId = pendingData.accountId;
+    const result = await handleAutoReplyDmMessageInput(bot, msg, accountId);
+    if (result) {
+      pendingAutoReplyDmMessageInputs.delete(userId);
+    }
+  } else if (pendingAutoReplyGroupsMessageInputs.has(userId)) {
+    const pendingData = pendingAutoReplyGroupsMessageInputs.get(userId);
+    if (!pendingData || !pendingData.accountId) {
+      pendingAutoReplyGroupsMessageInputs.delete(userId);
+      return;
+    }
+    const accountId = pendingData.accountId;
+    const result = await handleAutoReplyGroupsMessageInput(bot, msg, accountId);
+    if (result) {
+      pendingAutoReplyGroupsMessageInputs.delete(userId);
     }
   } else {
     // Normal message not in any pending state - ignore it
@@ -1402,6 +1464,13 @@ bot.on('callback_query', async (callbackQuery) => {
       if (result && result.accountId) {
         addPendingStateWithTimeout(pendingCustomIntervalInputs, userId, result);
       }
+    } else if (data === 'btn_config_group_delay') {
+      const result = await handleConfigGroupDelay(bot, callbackQuery);
+      if (result && result.accountId) {
+        addPendingStateWithTimeout(pendingGroupDelayInputs, userId, result);
+      }
+    } else if (data === 'btn_config_forward_mode') {
+      await handleConfigForwardMode(bot, callbackQuery);
     } else if (data === 'btn_config_quiet_hours') {
       await handleConfigQuietHours(bot, callbackQuery);
     } else if (data === 'config_quiet_set') {
@@ -1459,16 +1528,13 @@ bot.on('callback_query', async (callbackQuery) => {
       }
     } else if (data === 'ab_view_messages') {
       await handleABViewMessages(bot, callbackQuery);
-    } else if (data === 'btn_saved_templates') {
-      await handleSavedTemplatesButton(bot, callbackQuery);
-    } else if (data === 'template_sync') {
-      await handleTemplateSync(bot, callbackQuery);
-    } else if (data.startsWith('template_select_')) {
-      const slot = data.replace('template_select_', '');
-      await handleTemplateSelect(bot, callbackQuery, slot);
-    } else if (data.startsWith('template_clear_')) {
-      const slot = data.replace('template_clear_', '');
-      await handleTemplateClear(bot, callbackQuery, slot);
+    } else if (data === 'btn_config_group_delay') {
+      const result = await handleConfigGroupDelay(bot, callbackQuery);
+      if (result && result.accountId) {
+        addPendingStateWithTimeout(pendingGroupDelayInputs, userId, result);
+      }
+    } else if (data === 'btn_config_forward_mode') {
+      await handleConfigForwardMode(bot, callbackQuery);
     } else if (data === 'btn_stats') {
       await handleStatsButton(bot, callbackQuery);
     } else if (data === 'stats_top_groups') {
@@ -1527,6 +1593,50 @@ bot.on('callback_query', async (callbackQuery) => {
       await handleDeleteAccount(bot, callbackQuery, accountId);
     } else if (data === 'stop_broadcast') {
       await handleStopCallback(bot, callbackQuery);
+    } else if (data === 'btn_config_blacklist') {
+      const result = await handleConfigGroupBlacklist(bot, callbackQuery);
+      if (result && result.accountId) {
+        // No pending state needed for blacklist menu
+      }
+    } else if (data === 'btn_blacklist_search') {
+      const result = await handleBlacklistSearch(bot, callbackQuery);
+      if (result && result.accountId) {
+        addPendingStateWithTimeout(pendingBlacklistSearchInputs, userId, result);
+      }
+    } else if (data === 'btn_blacklist_view') {
+      await handleBlacklistView(bot, callbackQuery);
+    } else if (data.startsWith('blacklist_add_')) {
+      const groupId = data.replace('blacklist_add_', '');
+      await handleBlacklistAdd(bot, callbackQuery, groupId);
+    } else if (data.startsWith('blacklist_remove_')) {
+      const groupId = data.replace('blacklist_remove_', '');
+      await handleBlacklistRemove(bot, callbackQuery, groupId);
+    } else if (data === 'btn_config_auto_reply_dm') {
+      const result = await handleConfigAutoReplyDm(bot, callbackQuery);
+      if (result && result.accountId) {
+        // No pending state needed for menu
+      }
+    } else if (data.startsWith('auto_reply_dm_toggle_')) {
+      const enabled = data.replace('auto_reply_dm_toggle_', '') === 'true';
+      await handleAutoReplyDmToggle(bot, callbackQuery, enabled);
+    } else if (data === 'auto_reply_dm_set_message') {
+      const result = await handleAutoReplyDmSetMessage(bot, callbackQuery);
+      if (result && result.accountId) {
+        addPendingStateWithTimeout(pendingAutoReplyDmMessageInputs, userId, result);
+      }
+    } else if (data === 'btn_config_auto_reply_groups') {
+      const result = await handleConfigAutoReplyGroups(bot, callbackQuery);
+      if (result && result.accountId) {
+        // No pending state needed for menu
+      }
+    } else if (data.startsWith('auto_reply_groups_toggle_')) {
+      const enabled = data.replace('auto_reply_groups_toggle_', '') === 'true';
+      await handleAutoReplyGroupsToggle(bot, callbackQuery, enabled);
+    } else if (data === 'auto_reply_groups_set_message') {
+      const result = await handleAutoReplyGroupsSetMessage(bot, callbackQuery);
+      if (result && result.accountId) {
+        addPendingStateWithTimeout(pendingAutoReplyGroupsMessageInputs, userId, result);
+      }
     }
   } catch (error) {
     // Check if it's a "message not modified" error - these should be handled by safeEditMessage

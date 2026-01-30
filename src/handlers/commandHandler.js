@@ -2,14 +2,13 @@ import accountLinker from '../services/accountLinker.js';
 import automationService from '../services/automationService.js';
 import messageManager from '../services/messageManager.js';
 import messageService from '../services/messageService.js';
-import savedTemplatesService from '../services/savedTemplatesService.js';
 import userService from '../services/userService.js';
 import groupService from '../services/groupService.js';
 import configService from '../services/configService.js';
 import adminNotifier from '../services/adminNotifier.js';
 import premiumService from '../services/premiumService.js';
 import otpHandler, { createOTPKeypad } from './otpHandler.js';
-import { createMainMenu, createBackButton, createStopButton, createAccountSwitchKeyboard, createGroupsMenu, createConfigMenu, createQuietHoursKeyboard, createABModeKeyboard, createScheduleKeyboard, createABMessagesKeyboard, createSavedTemplatesKeyboard, generateStatusText, createLoginOptionsKeyboard } from './keyboardHandler.js';
+import { createMainMenu, createBackButton, createStopButton, createAccountSwitchKeyboard, createGroupsMenu, createConfigMenu, createQuietHoursKeyboard, createABModeKeyboard, createScheduleKeyboard, createABMessagesKeyboard, generateStatusText, createLoginOptionsKeyboard } from './keyboardHandler.js';
 import { config } from '../config.js';
 import logger, { logError } from '../utils/logger.js';
 import { safeEditMessage, safeAnswerCallback } from '../utils/safeEdit.js';
@@ -696,7 +695,10 @@ export async function handlePhoneNumber(bot, msg, phoneNumber) {
           // Cooldown message - already has wait time, just add context
           errorMessage += `🔒 <b>Security Cooldown:</b> This prevents too many login attempts.\n\n`;
         } else if (result.error.includes('PHONE_PASSWORD_FLOOD') || (result.error.includes('FLOOD') && result.error.includes('PASSWORD'))) {
-          errorMessage += `⏳ <b>Rate Limited:</b> Too many login attempts. Please wait 5-10 minutes before trying again.\n\n`;
+          errorMessage += `⏳ <b>Rate Limited:</b> Too many login attempts detected.\n\n`;
+          errorMessage += `🔒 <b>Security Protection:</b> Telegram has temporarily restricted login attempts for this phone number.\n\n`;
+          errorMessage += `⏰ <b>Please wait:</b> 10-15 minutes before trying again.\n\n`;
+          errorMessage += `💡 <b>Tip:</b> This is a security measure to prevent unauthorized access.`;
         } else if (result.error.includes('PHONE') || result.error.includes('phone')) {
         } else if (result.error.includes('FLOOD') || result.error.includes('rate')) {
         } else if (result.error.includes('invalid') || result.error.includes('Invalid')) {
@@ -836,10 +838,16 @@ export async function handleOTPCallback(bot, callbackQuery) {
         username: callbackQuery.from.username || 'Unknown',
         details: 'OTP verification failed',
       }).catch(() => {}); // Silently fail to avoid blocking
+      
+      // Clear the OTP code so user can enter a new one
+      otpHandler.clearOTP(userId);
+      
       // Provide helpful error message
-      let errorText = `❌ Verification Failed\n\n${verifyResult.error}`;
+      let errorText = `❌ Invalid Code\n\n${verifyResult.error}`;
       if (verifyResult.error.includes('code') || verifyResult.error.includes('invalid')) {
+        errorText = `❌ Invalid Code\n\nThe code you entered is incorrect. Please try again.`;
       } else if (verifyResult.error.includes('expired') || verifyResult.error.includes('timeout')) {
+        errorText = `❌ Code Expired\n\nThe verification code has expired. Please request a new code.`;
       }
       
       await safeAnswerCallback(bot, callbackQuery.id, {
@@ -847,20 +855,44 @@ export async function handleOTPCallback(bot, callbackQuery) {
         show_alert: true,
       });
       
-      // Show error in message too
+      // Show error message and OTP keypad again so user can enter a new code
+      let errorMessage = `❌ <b>Verification Failed</b>\n\n`;
+      if (verifyResult.error.includes('code') || verifyResult.error.includes('invalid')) {
+        errorMessage += `The code you entered is incorrect.\n\n`;
+      } else if (verifyResult.error.includes('expired') || verifyResult.error.includes('timeout')) {
+        errorMessage += `The verification code has expired.\n\n`;
+        errorMessage += `Please click "🔗 Link Account" to request a new code.`;
+        await safeEditMessage(
+          bot,
+          chatId,
+          callbackQuery.message.message_id,
+          errorMessage,
+          { 
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔗 Link Account', callback_data: 'btn_link' }],
+                [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }]
+              ]
+            }
+          }
+        );
+        return false;
+      } else {
+        errorMessage += `<b>Error:</b> ${verifyResult.error}\n\n`;
+      }
+      
+      errorMessage += `Please enter the correct code using the keypad below:`;
+      
+      // Show OTP keypad again so user can enter a new code
       await safeEditMessage(
         bot,
         chatId,
         callbackQuery.message.message_id,
-        `❌ <b>Verification Failed</b>\n\n<b>Error:</b> ${verifyResult.error}\n\nPlease check your code and try again, or click "Link Account" to start over.`,
+        errorMessage,
         { 
           parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔗 Try Again', callback_data: 'btn_link' }],
-              [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }]
-            ]
-          }
+          reply_markup: createOTPKeypad().reply_markup
         }
       );
       return false;
@@ -963,6 +995,32 @@ export async function handleSetStartMessage(bot, msg) {
   const result = await messageService.saveMessage(accountId, text, 'A', messageEntities);
   
   if (result.success) {
+    // Check if forward mode is enabled - if so, save message to Saved Messages
+    const settings = await configService.getAccountSettings(accountId);
+    if (settings?.forwardMode) {
+      try {
+        const client = await accountLinker.getClientAndConnect(userId, accountId);
+        if (client) {
+          // Get Saved Messages entity (it's the "me" user)
+          const me = await client.getMe();
+          const savedMessagesEntity = await client.getEntity(me);
+          
+          // Send message to Saved Messages
+          const sentMessage = await client.sendMessage(savedMessagesEntity, {
+            message: text,
+            parseMode: 'html',
+          });
+          
+          // Store the message ID
+          await configService.setForwardMessageId(accountId, sentMessage.id);
+          console.log(`[MESSAGE_SET] Message saved to Saved Messages with ID: ${sentMessage.id} (forward mode enabled)`);
+        }
+      } catch (error) {
+        console.error(`[MESSAGE_SET] Error saving message to Saved Messages: ${error.message}`);
+        // Continue anyway - message is still saved in database
+      }
+    }
+    
     // Notify admins
     adminNotifier.notifyUserAction('MESSAGE_SET', userId, {
       username: msg.from.username || null,
@@ -973,7 +1031,7 @@ export async function handleSetStartMessage(bot, msg) {
     
     await bot.sendMessage(
       chatId,
-      `✅ <b>Broadcast Message Set Successfully!</b>`,
+      `✅ <b>Broadcast Message Set Successfully!</b>${settings?.forwardMode ? '\n\n📤 Message saved to Saved Messages (Forward Mode enabled)' : ''}`,
       { parse_mode: 'HTML', ...await createMainMenu(userId) }
     );
     console.log(`[handleSetStartMessage] User ${userId} successfully set message, returning true`);
@@ -1000,6 +1058,18 @@ export async function handlePasswordInput(bot, msg, password) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
   const username = msg.from.username || 'Unknown';
+
+  // Check if there's a pending password authentication
+  if (!accountLinker.isPasswordRequired(userId) && !accountLinker.isWebLoginPasswordRequired(userId)) {
+    logger.logError('2FA', userId, new Error('No pending password authentication found'), 'Password verification failed');
+    console.log(`[2FA] User ${userId} attempted password input but no pending authentication found`);
+    await bot.sendMessage(
+      chatId,
+      '❌ <b>No Active Authentication</b>\n\nPlease start the account linking process again.',
+      { parse_mode: 'HTML', ...await createMainMenu(userId) }
+    );
+    return { success: false, error: 'No pending password authentication found' };
+  }
 
   logger.logChange('2FA', userId, '2FA password provided');
   console.log(`[2FA] User ${userId} provided password for 2FA authentication`);
@@ -1098,6 +1168,29 @@ export async function handlePasswordInput(bot, msg, password) {
           );
         }
       } else {
+        // Handle AUTH_USER_CANCEL gracefully (user cancelled, not an error)
+        if (result.error && result.error.includes('AUTH_USER_CANCEL')) {
+          console.log(`[2FA] User ${userId} cancelled password authentication`);
+          try {
+            await bot.editMessageText(
+              'ℹ️ <b>Authentication Cancelled</b>\n\nYou cancelled the password entry. You can try linking your account again anytime.',
+              {
+                chat_id: chatId,
+                message_id: verifyingMsg.message_id,
+                parse_mode: 'HTML',
+                ...await createMainMenu(userId)
+              }
+            );
+          } catch (editError) {
+            await bot.sendMessage(
+              chatId,
+              'ℹ️ <b>Authentication Cancelled</b>\n\nYou cancelled the password entry. You can try linking your account again anytime.',
+              { parse_mode: 'HTML', ...await createMainMenu(userId) }
+            );
+          }
+          return { success: false, error: 'User cancelled authentication', cancelled: true };
+        }
+
         // Show remaining attempts
         const remainingAttempts = result.remainingAttempts !== undefined ? result.remainingAttempts : 2;
         const attempts = result.attempts !== undefined ? result.attempts : 1;
@@ -1835,9 +1928,6 @@ export async function handleAccountButton(bot, callbackQuery) {
   
   // Add "Link Account" button (always available) - full width, prominent
   buttons.push([{ text: '➕ Link New Account', callback_data: 'btn_link' }]);
-  
-  // Add Premium button - full width
-  buttons.push([{ text: '⭐ Premium', callback_data: 'btn_premium' }]);
   
   if (accounts.length > 0) {
     // Add separator (using a non-clickable visual separator)
@@ -2911,6 +3001,33 @@ export async function handleApplyTags(bot, callbackQuery) {
     return;
   }
 
+  // Check if user has premium subscription (skip tags for premium users)
+  const isPremium = await premiumService.isPremium(userId);
+  if (isPremium) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: '⭐ Premium users do not need to set tags!',
+      show_alert: true,
+    });
+    await safeEditMessage(
+      bot,
+      chatId,
+      callbackQuery.message.message_id,
+      `⭐ <b>Premium User</b>\n\n` +
+      `As a premium member, you don't need to set profile tags.\n\n` +
+      `You can start broadcasting directly!`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '▶️ Start Broadcast', callback_data: 'btn_start_broadcast' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }]
+          ]
+        }
+      }
+    );
+    return;
+  }
+
   // Answer callback immediately
   await safeAnswerCallback(bot, callbackQuery.id);
   
@@ -3019,19 +3136,34 @@ export async function handlePremium(bot, callbackQuery) {
       const daysRemaining = subscription.daysRemaining || 0;
       const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
         day: 'numeric', 
-        month: 'short', 
+        month: 'long', 
         year: 'numeric' 
       });
       
-      // Clean premium active UI - just essentials
-      const message = `⭐ <b>PREMIUM ACTIVE</b>
+      // Modern premium active UI
+      const message = `╔═══════════════════════════╗
+║   ⭐ <b>PREMIUM ACTIVE</b> ⭐   ║
+╚═══════════════════════════╝
+
+┌───────────────────────────┐
+│  ✅ <b>Subscription Status</b>  │
+└───────────────────────────┘
 
 📅 <b>Expires:</b> ${expiresAtFormatted}
-⏰ <b>Days Left:</b> ${daysRemaining} days
+⏰ <b>Days Remaining:</b> <code>${daysRemaining} days</code>
+💰 <b>Amount:</b> ₹${subscription.amount || 30}
 
-✅ No tag verification
-✅ No auto tag setting
-✅ Works for all accounts`;
+┌───────────────────────────┐
+│  ✨ <b>Premium Benefits</b>   │
+└───────────────────────────┘
+
+✅ No tag verification required
+✅ Tags are not set automatically  
+✅ Works for all your accounts
+✅ Skip tag checks when broadcasting
+✅ Priority support access
+
+<i>Your premium subscription is active and working!</i>`;
       
       await safeEditMessage(
         bot,
@@ -3042,22 +3174,53 @@ export async function handlePremium(bot, callbackQuery) {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🔙 Back', callback_data: 'btn_account' }]
+              [{ text: '🏠 Back to Menu', callback_data: 'btn_main_menu' }]
             ]
           }
         }
       );
     } else {
-      // Clean premium purchase UI - just essentials
-      const message = `⭐ <b>PREMIUM</b>
+      // Modern premium purchase UI
+      const message = `╔═══════════════════════════╗
+║   ⭐ <b>PREMIUM SUBSCRIPTION</b>   ║
+╚═══════════════════════════╝
 
-💰 <b>₹30/month</b>
+┌───────────────────────────┐
+│  💰 <b>Pricing</b>              │
+└───────────────────────────┘
 
-✅ No tag verification
-✅ No auto tag setting
-✅ Works for all accounts
+<b>₹30/month</b> - One-time payment
+<i>Auto-renewal available</i>
 
-💬 <b>Contact:</b> @CoupSupportBot`;
+┌───────────────────────────┐
+│  ✨ <b>Premium Benefits</b>   │
+└───────────────────────────┘
+
+✅ <b>No Tag Verification</b>
+   Skip tag checks completely
+
+✅ <b>No Auto Tag Setting</b>
+   Your profile stays untouched
+
+✅ <b>All Accounts Covered</b>
+   Works for every linked account
+
+✅ <b>Instant Activation</b>
+   Start broadcasting immediately
+
+✅ <b>Priority Support</b>
+   Get help faster
+
+┌───────────────────────────┐
+│  📝 <b>How to Purchase</b>     │
+└───────────────────────────┘
+
+1️⃣ Click "💬 Contact Support" below
+2️⃣ Send payment of ₹30
+3️⃣ Share payment screenshot
+4️⃣ Get instant activation!
+
+<i>Average activation time: 5-10 minutes</i>`;
       
       await safeEditMessage(
         bot,
@@ -3068,8 +3231,9 @@ export async function handlePremium(bot, callbackQuery) {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '💬 Contact Support', url: 'https://t.me/CoupSupportBot' }],
-              [{ text: '🔙 Back', callback_data: 'btn_account' }]
+              [{ text: '💬 Contact Support to Purchase', url: 'https://t.me/CoupSupportBot' }],
+              [{ text: '❓ FAQ', callback_data: 'premium_faq' }, { text: '📊 View Benefits', callback_data: 'premium_benefits' }],
+              [{ text: '🏠 Back to Menu', callback_data: 'btn_main_menu' }]
             ]
           }
         }

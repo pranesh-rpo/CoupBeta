@@ -41,9 +41,12 @@ export async function initializeSchema() {
         ab_mode INTEGER DEFAULT 0,
         ab_mode_type TEXT DEFAULT 'single',
         ab_last_variant TEXT DEFAULT 'A',
-        saved_template_slot INTEGER DEFAULT 1,
         auto_mention INTEGER DEFAULT 0,
         mention_count INTEGER DEFAULT 5,
+        group_delay_min INTEGER,
+        group_delay_max INTEGER,
+        forward_mode INTEGER DEFAULT 0,
+        forward_message_id INTEGER,
         UNIQUE(user_id, phone)
       )
     `);
@@ -63,30 +66,14 @@ export async function initializeSchema() {
     `);
 
     // Add message_entities column if it doesn't exist (for existing databases)
-    // Use direct database access to avoid error logging from db.query()
     try {
-      // Ensure database is connected
-      const dbInstance = db.connect();
-      
-      // Check if column already exists by querying table info
-      const tableInfo = dbInstance.prepare(`PRAGMA table_info(messages)`).all();
-      const hasMessageEntities = tableInfo.some(col => col.name === 'message_entities');
-      
-      if (!hasMessageEntities) {
-        // Column doesn't exist, add it
-        dbInstance.prepare(`ALTER TABLE messages ADD COLUMN message_entities TEXT`).run();
-        console.log('✅ Added message_entities column to messages table');
-      } else {
-        // Column already exists, skip silently
-        // No need to log - this is expected for existing databases
-      }
+      await db.query(`
+        ALTER TABLE messages ADD COLUMN message_entities TEXT
+      `);
     } catch (error) {
-      // If check fails, column might already exist or table might not exist yet
-      // This is safe to ignore - CREATE TABLE IF NOT EXISTS above handles new tables
-      // Only log unexpected errors (not "duplicate column" or "no such table")
-      const errorMsg = error.message || String(error);
-      if (!errorMsg.includes('duplicate column') && !errorMsg.includes('no such table')) {
-        console.log(`⚠️  Could not check/add message_entities column: ${errorMsg}`);
+      // Column already exists, ignore error
+      if (!error.message.includes('duplicate column')) {
+        console.log('Note: message_entities column may already exist');
       }
     }
 
@@ -448,6 +435,48 @@ export async function initializeSchema() {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_user_id ON premium_subscriptions(user_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_status ON premium_subscriptions(status)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_expires_at ON premium_subscriptions(expires_at)`);
+
+    // Add group_delay and forward_mode columns if they don't exist (for existing databases)
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN group_delay_min INTEGER`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN group_delay_max INTEGER`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN forward_mode INTEGER DEFAULT 0`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN forward_message_id INTEGER`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_dm_enabled INTEGER DEFAULT 0`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_dm_message TEXT`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_groups_enabled INTEGER DEFAULT 0`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+    try {
+      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_groups_message TEXT`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
 
     console.log('✅ Database schema initialized');
   } catch (error) {
