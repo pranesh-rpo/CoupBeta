@@ -6,6 +6,7 @@
 
 import db from '../database/db.js';
 import logger from '../utils/logger.js';
+import userService from './userService.js';
 
 class PremiumService {
   /**
@@ -97,6 +98,17 @@ class PremiumService {
       const paymentMethod = paymentData.paymentMethod || 'manual';
       const paymentReference = paymentData.paymentReference || null;
 
+      // Ensure user exists in users table (required for foreign key constraint)
+      const user = await userService.getUser(userId);
+      if (!user) {
+        // Create user if they don't exist
+        // Use provided user info or defaults
+        const username = paymentData.username || null;
+        const firstName = paymentData.firstName || paymentData.first_name || null;
+        await userService.addUser(userId, username, firstName);
+        logger.logChange('PREMIUM', userId, 'User created automatically when adding premium');
+      }
+
       // Calculate expiry date (30 days from now)
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
@@ -123,23 +135,34 @@ class PremiumService {
 
         logger.logChange('PREMIUM', userId, `Premium subscription extended until ${newExpiresAt.toISOString()}`);
       } else {
-        // Cancel any existing subscriptions
+        // Check if subscription row exists (even if expired/cancelled)
+        // Due to UNIQUE constraint, we need to UPDATE or use INSERT OR REPLACE
         if (existing) {
+          // Update existing subscription to make it active again
           await db.query(
-            `UPDATE premium_subscriptions SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
-            [userId]
+            `UPDATE premium_subscriptions 
+             SET status = 'active', 
+                 amount = $1,
+                 currency = $2,
+                 payment_method = $3,
+                 payment_reference = $4,
+                 expires_at = $5,
+                 cancelled_at = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = $6`,
+            [amount, currency, paymentMethod, paymentReference, expiresAt.toISOString(), userId]
           );
+          logger.logChange('PREMIUM', userId, `Premium subscription reactivated until ${expiresAt.toISOString()}`);
+        } else {
+          // Create new subscription (user doesn't have any subscription yet)
+          await db.query(
+            `INSERT INTO premium_subscriptions 
+             (user_id, status, amount, currency, payment_method, payment_reference, expires_at)
+             VALUES ($1, 'active', $2, $3, $4, $5, $6)`,
+            [userId, amount, currency, paymentMethod, paymentReference, expiresAt.toISOString()]
+          );
+          logger.logChange('PREMIUM', userId, `Premium subscription created until ${expiresAt.toISOString()}`);
         }
-
-        // Create new subscription
-        await db.query(
-          `INSERT INTO premium_subscriptions 
-           (user_id, status, amount, currency, payment_method, payment_reference, expires_at)
-           VALUES ($1, 'active', $2, $3, $4, $5, $6)`,
-          [userId, amount, currency, paymentMethod, paymentReference, expiresAt.toISOString()]
-        );
-
-        logger.logChange('PREMIUM', userId, `Premium subscription created until ${expiresAt.toISOString()}`);
       }
 
       const subscription = await this.getSubscription(userId);
