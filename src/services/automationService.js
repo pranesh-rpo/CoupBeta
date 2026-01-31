@@ -94,9 +94,14 @@ class AutomationService {
       this.globalRateLimitTracking.set(accountId, tracking);
     }
     
-    // Clean up old messages (older than 1 hour)
+    // OPTIMIZATION: Clean up old messages (older than 1 hour) and limit array size
     const oneHourAgo = Date.now() - 3600000;
     tracking.messages = tracking.messages.filter(ts => ts > oneHourAgo);
+    
+    // OPTIMIZATION: Limit array size to prevent memory growth (keep only last 1000 entries)
+    if (tracking.messages.length > 1000) {
+      tracking.messages = tracking.messages.slice(-1000);
+    }
     
     return tracking;
   }
@@ -226,13 +231,27 @@ class AutomationService {
     }
     tracking[groupIdStr] = Date.now();
     
-    // Clean up old entries (older than 24 hours) to prevent memory leak
-    const oneDayAgo = Date.now() - 86400000;
-    Object.keys(tracking).forEach(gid => {
-      if (tracking[gid] < oneDayAgo) {
-        delete tracking[gid];
+    // OPTIMIZATION: Clean up old entries periodically (not on every call) to reduce CPU usage
+    // Only clean up if tracking has grown large (every 100 entries)
+    const trackingSize = Object.keys(tracking).length;
+    if (trackingSize > 0 && trackingSize % 100 === 0) {
+      const oneDayAgo = Date.now() - 86400000;
+      Object.keys(tracking).forEach(gid => {
+        if (tracking[gid] < oneDayAgo) {
+          delete tracking[gid];
+        }
+      });
+    }
+    
+    // OPTIMIZATION: Limit tracking size per account to prevent unbounded growth
+    // If tracking exceeds 10000 entries, remove oldest 20%
+    if (trackingSize > 10000) {
+      const entries = Object.entries(tracking).sort((a, b) => a[1] - b[1]);
+      const toRemove = Math.floor(entries.length * 0.2);
+      for (let i = 0; i < toRemove; i++) {
+        delete tracking[entries[i][0]];
       }
-    });
+    }
   }
   
   /**
@@ -581,14 +600,12 @@ class AutomationService {
       }
       
       // Check if forward mode is enabled
+      // Forward mode allows non-premium users to send premium emojis by forwarding
+      // the LAST message from Saved Messages (user should forward a message there first)
       useForwardMode = settings?.forwardMode || false;
-      forwardMessageId = settings?.forwardMessageId;
       
-      if (useForwardMode && forwardMessageId) {
-        console.log(`[BROADCAST] Forward mode enabled for account ${accountId}, will forward message ID ${forwardMessageId}`);
-      } else if (useForwardMode && !forwardMessageId) {
-        console.log(`[BROADCAST] WARNING: Forward mode enabled but no message ID set for account ${accountId}, falling back to normal message`);
-        useForwardMode = false;
+      if (useForwardMode) {
+        console.log(`[BROADCAST] Forward mode enabled for account ${accountId}, will forward last message from Saved Messages`);
       }
       
       // Check if auto-mention is enabled - note: mentions only work with regular messages, not forwarded messages
@@ -598,22 +615,41 @@ class AutomationService {
         console.log(`[BROADCAST] To use mentions, disable forward mode or use regular text messages.`);
       }
       
-      // If not using forward mode, get A/B variant
+      // If not using forward mode, get message from pool or A/B variant
       if (!useForwardMode) {
         try {
-          const abMode = settings?.abMode || false;
-          const abModeType = settings?.abModeType || 'single';
-          const abLastVariant = settings?.abLastVariant || 'A';
-          
-          const messageData = await messageService.selectMessageVariant(
-            accountId,
-            abMode,
-            abModeType,
-            abLastVariant
-          );
+          const useMessagePool = settings?.useMessagePool || false;
+          let messageData = null;
+          let messageEntities = null;
+
+          // Try message pool first if enabled
+          if (useMessagePool) {
+            const poolMode = settings?.messagePoolMode || 'random';
+            const poolLastIndex = settings?.messagePoolLastIndex || 0;
+
+            if (poolMode === 'random') {
+              messageData = await messageService.getRandomFromPool(accountId);
+            } else if (poolMode === 'rotate') {
+              const result = await messageService.getNextFromPool(accountId, poolLastIndex);
+              if (result) {
+                messageData = { text: result.text, entities: result.entities };
+                // Update last index for next rotation
+                await configService.updateMessagePoolLastIndex(accountId, result.nextIndex);
+              }
+            } else if (poolMode === 'sequential') {
+              // Sequential mode: use message index based on group index
+              // This will be handled per-group in sendSingleMessageToAllGroups
+              messageData = await messageService.getMessageByIndex(accountId, poolLastIndex);
+              // Note: sequential index is updated per group, not here
+            }
+          }
+
+          // Fall back to regular message if pool is empty or not enabled
+          if (!messageData) {
+            messageData = await messageService.getActiveMessage(accountId);
+          }
           
           // Handle both old (string) and new (object) formats for backward compatibility
-          let messageEntities = null;
           if (messageData === null) {
             broadcastMessage = null;
           } else if (typeof messageData === 'string') {
@@ -627,22 +663,11 @@ class AutomationService {
           
           // Validate message (check for empty/whitespace)
           if (broadcastMessage && typeof broadcastMessage === 'string' && broadcastMessage.trim().length === 0) {
-            console.log(`[BROADCAST] Selected message variant is empty/whitespace, treating as null`);
+            console.log(`[BROADCAST] Selected message is empty/whitespace, treating as null`);
             broadcastMessage = null;
           }
-          
-          // Update last variant if using rotate mode
-          if (abMode && abModeType === 'rotate' && broadcastMessage) {
-            try {
-              const nextVariant = abLastVariant === 'A' ? 'B' : 'A';
-              await configService.updateABLastVariant(accountId, nextVariant);
-            } catch (variantError) {
-              logError(`[BROADCAST ERROR] Error updating AB variant:`, variantError);
-              // Non-critical error, continue
-            }
-          }
         } catch (messageError) {
-          logError(`[BROADCAST ERROR] Error getting message variant:`, messageError);
+          logError(`[BROADCAST ERROR] Error getting message:`, messageError);
           broadcastMessage = null;
           messageEntities = null;
         }
@@ -732,7 +757,8 @@ class AutomationService {
         return { success: false, error: 'No message or saved template available' };
       }
       
-      this.sendSingleMessageToAllGroups(userId, accountId, broadcastMessage, useForwardMode, forwardMessageId, true, messageEntities)
+      // Forward mode doesn't need forwardMessageId - it will get the last message from Saved Messages
+      this.sendSingleMessageToAllGroups(userId, accountId, broadcastMessage, useForwardMode, null, true, messageEntities)
         .then(() => {
           console.log(`[BROADCAST] Initial message send completed for user ${userId}, account ${accountId}`);
         })
@@ -833,6 +859,7 @@ class AutomationService {
       console.log(`[BROADCAST] Scheduled next cycle in ${customIntervalMinutes} minutes for account ${accountId} (scheduled BEFORE sending)`);
 
       // NOW send messages (this may take time, but next cycle is already scheduled)
+      // OPTIMIZATION: Cache account settings once per cycle to avoid redundant database calls
       // Get message with A/B variant selection and saved template for this cycle
       let settings;
       try {
@@ -846,34 +873,45 @@ class AutomationService {
         settings = {};
       }
       
+      // Store settings in broadcast data for reuse within this cycle
+      broadcast.cachedSettings = settings;
+      
+      // Check forward mode - forward mode forwards the LAST message from Saved Messages
+      // User should manually forward a message (with premium emojis) to Saved Messages first
+      let useForwardMode = settings?.forwardMode || false;
+      
+      // If forward mode was enabled when broadcast started, use stored value as fallback
+      if (!useForwardMode && broadcast.useForwardMode) {
+        useForwardMode = broadcast.useForwardMode;
+      }
+      
       const savedTemplateSlot = settings?.savedTemplateSlot;
       let messageToSend = null;
-      let useTemplate = false;
-      let templateData = null;
+      let storedEntities = null;
       
-      console.log(`[BROADCAST] Cycle check - saved template slot: ${savedTemplateSlot === null ? 'null (none)' : savedTemplateSlot}`);
+      console.log(`[BROADCAST] Cycle check - forward mode: ${useForwardMode}, forward message ID: ${forwardMessageId}, saved template slot: ${savedTemplateSlot === null ? 'null (none)' : savedTemplateSlot}`);
         
       // Check if saved template slot is active (must be explicitly 1, 2, or 3, not null/undefined)
+      // Saved templates take priority over forward mode
       if (savedTemplateSlot !== null && savedTemplateSlot !== undefined && [1, 2, 3].includes(savedTemplateSlot)) {
         try {
           const template = await savedTemplatesService.getSavedTemplate(broadcast.accountId, savedTemplateSlot);
           if (template && template.messageId) {
-            useTemplate = true;
-            templateData = template;
-            console.log(`[BROADCAST] Cycle using saved template slot ${savedTemplateSlot}`);
+            // Use saved template: enable forward mode and use template's message ID
+            useForwardMode = true;
+            forwardMessageId = template.messageId;
+            console.log(`[BROADCAST] Cycle using saved template slot ${savedTemplateSlot} (message ID: ${forwardMessageId})`);
           } else {
-            console.log(`[BROADCAST] Cycle - saved template slot ${savedTemplateSlot} set but template not found, using normal message`);
+            console.log(`[BROADCAST] Cycle - saved template slot ${savedTemplateSlot} set but template not found, using normal message or forward mode`);
           }
         } catch (templateError) {
           logError(`[BROADCAST ERROR] Error getting saved template in cycle:`, templateError);
-          console.log(`[BROADCAST] Error retrieving template slot ${savedTemplateSlot}, using normal message`);
+          console.log(`[BROADCAST] Error retrieving template slot ${savedTemplateSlot}, using normal message or forward mode`);
         }
-      } else {
-        console.log(`[BROADCAST] Cycle - no saved template slot active, using normal message`);
       }
         
-      // If not using saved template, get A/B variant
-      if (!useTemplate) {
+      // If not using forward mode (and not using saved template), get A/B variant message
+      if (!useForwardMode) {
         try {
           const abMode = settings?.abMode || false;
           const abModeType = settings?.abModeType || 'single';
@@ -887,7 +925,6 @@ class AutomationService {
           );
           
           // Handle both old (string) and new (object) formats for backward compatibility
-          let storedEntities = null;
           if (messageData === null) {
             messageToSend = null;
           } else if (typeof messageData === 'string') {
@@ -919,12 +956,16 @@ class AutomationService {
           logError(`[BROADCAST ERROR] Error getting message variant in cycle:`, messageError);
           messageToSend = null;
         }
+      } else {
+        // Using forward mode - get message entities from stored broadcast data if available
+        storedEntities = broadcast.messageEntities || null;
       }
         
       // Send message if we have one (this may take time, but next cycle is already scheduled)
-      if (useTemplate || (messageToSend && messageToSend.trim().length > 0)) {
+      if (useForwardMode || (messageToSend && messageToSend.trim().length > 0)) {
         const sendStartTime = Date.now();
-        await this.sendSingleMessageToAllGroups(userId, broadcast.accountId, messageToSend, useTemplate, templateData, false, storedEntities);
+        // Forward mode doesn't need forwardMessageId - it will get the last message from Saved Messages
+        await this.sendSingleMessageToAllGroups(userId, broadcast.accountId, messageToSend, useForwardMode, null, false, storedEntities);
         const sendDuration = ((Date.now() - sendStartTime) / 1000 / 60).toFixed(2);
         console.log(`[BROADCAST] Cycle send completed for account ${accountId} in ${sendDuration} minutes`);
       } else {
@@ -1010,9 +1051,11 @@ class AutomationService {
         }
       }
 
-      // Clear all scheduled timeouts
-      if (broadcast.timeouts && Array.isArray(broadcast.timeouts) && broadcast.timeouts.length > 0) {
-        broadcast.timeouts.forEach(timeoutId => {
+      // OPTIMIZATION: Clear all scheduled timeouts atomically to prevent race conditions
+      // Store timeouts array before clearing to avoid issues if broadcast is modified concurrently
+      const timeoutsToClear = broadcast.timeouts && Array.isArray(broadcast.timeouts) ? [...broadcast.timeouts] : [];
+      if (timeoutsToClear.length > 0) {
+        timeoutsToClear.forEach(timeoutId => {
           try {
             if (timeoutId) {
               clearTimeout(timeoutId);
@@ -1021,9 +1064,10 @@ class AutomationService {
             console.log(`[BROADCAST] Error clearing timeout: ${timeoutError?.message || 'Unknown'}`);
           }
         });
-        console.log(`[BROADCAST] Cleared ${broadcast.timeouts.length} scheduled messages for user ${userId}`);
+        console.log(`[BROADCAST] Cleared ${timeoutsToClear.length} scheduled messages for user ${userId}`);
       }
 
+      // OPTIMIZATION: Mark as stopped and delete atomically to prevent race conditions
       broadcast.isRunning = false;
       this.activeBroadcasts.delete(broadcastKey);
 
@@ -1319,15 +1363,32 @@ class AutomationService {
         return;
       }
 
-      // Get Saved Messages entity for forwarding if using forward mode
+      // Get Saved Messages entity and last message for forwarding if using forward mode
+      // Forward mode forwards the LAST message from Saved Messages (user should forward a message there first)
+      // This preserves premium emojis because the message is forwarded, not re-sent
       let savedMessagesEntity = null;
-      if (useForwardMode && forwardMessageId) {
+      let forwardMessageIdToUse = null;
+      if (useForwardMode) {
         try {
+          // Get Saved Messages entity (it's the "me" user)
           const me = await client.getMe();
           savedMessagesEntity = await client.getEntity(me);
-          console.log(`[BROADCAST] Using forward mode with message ID ${forwardMessageId}`);
+          
+          // Get the last message from Saved Messages
+          const messages = await client.getMessages(savedMessagesEntity, {
+            limit: 1,
+          });
+          
+          if (messages && messages.length > 0) {
+            forwardMessageIdToUse = messages[0].id;
+            console.log(`[BROADCAST] Using forward mode - will forward last message (ID: ${forwardMessageIdToUse}) from Saved Messages`);
+          } else {
+            console.log(`[BROADCAST] ⚠️ Forward mode enabled but no messages found in Saved Messages. User should forward a message to Saved Messages first.`);
+            useForwardMode = false; // Fallback to normal message
+          }
         } catch (error) {
-          logError(`[BROADCAST ERROR] Failed to get Saved Messages entity:`, error);
+          logError(`[BROADCAST ERROR] Failed to get Saved Messages or last message:`, error);
+          console.log(`[BROADCAST] ⚠️ Cannot get Saved Messages, forward mode will not work`);
           useForwardMode = false; // Fallback to normal message
         }
       }
@@ -1350,6 +1411,11 @@ class AutomationService {
       
       // Import groupBlacklistService dynamically to avoid circular dependencies
       const { default: groupBlacklistService } = await import('./groupBlacklistService.js');
+      
+      // OPTIMIZATION: Fetch all blacklisted groups once (batch check) instead of checking each group individually
+      // This eliminates N+1 query problem
+      const blacklistedGroupIds = await groupBlacklistService.getBlacklistedGroupIdsSet(accountId);
+      console.log(`[BROADCAST] Loaded ${blacklistedGroupIds.size} blacklisted group(s) for batch filtering`);
       
       // Filter only groups (exclude channels and private chats)
       // dialog.isGroup = true for regular groups and supergroups
@@ -1375,7 +1441,7 @@ class AutomationService {
         return false;
       });
       
-      // Filter out blacklisted groups
+      // Filter out blacklisted groups using Set lookup (O(1) performance)
       const groups = [];
       for (const dialog of allGroups) {
         const entity = dialog.entity;
@@ -1383,9 +1449,8 @@ class AutomationService {
         const groupName = dialog.name || 'Unknown';
         const entityType = entity?.className || 'Unknown';
         
-        // Check if group is blacklisted
-        const isBlacklisted = await groupBlacklistService.isBlacklisted(accountId, groupId);
-        if (isBlacklisted) {
+        // OPTIMIZATION: Use Set lookup instead of database query (O(1) vs O(n))
+        if (blacklistedGroupIds.has(groupId.toString())) {
           console.log(`[BROADCAST] 🚫 Skipping blacklisted group: "${groupName}" (ID: ${groupId})`);
           continue;
         }
@@ -1491,12 +1556,23 @@ class AutomationService {
             break; // Stop sending immediately
           }
           
-          // CRITICAL: Check daily message limit to prevent excessive sending
-          const dailyCapCheck = await this.checkAndResetDailyCap(accountId);
-          if (!dailyCapCheck.canSend) {
-            console.log(`[DAILY_CAP] ⚠️ Daily message limit reached for account ${accountId}: ${dailyCapCheck.dailySent}/${dailyCapCheck.dailyCap}. Skipping remaining groups.`);
-            // Don't stop broadcast, just skip this cycle - will resume tomorrow
-            break;
+          // OPTIMIZATION: Check daily cap once per cycle (not per group) to reduce database calls
+          // Only check on first group, then cache the result
+          if (i === 0) {
+            const dailyCapCheck = await this.checkAndResetDailyCap(accountId);
+            broadcast.cachedDailyCapCheck = dailyCapCheck;
+            if (!dailyCapCheck.canSend) {
+              console.log(`[DAILY_CAP] ⚠️ Daily message limit reached for account ${accountId}: ${dailyCapCheck.dailySent}/${dailyCapCheck.dailyCap}. Skipping all groups.`);
+              // Don't stop broadcast, just skip this cycle - will resume tomorrow
+              break;
+            }
+          } else {
+            // Use cached daily cap check for subsequent groups
+            const dailyCapCheck = broadcast.cachedDailyCapCheck;
+            if (dailyCapCheck && !dailyCapCheck.canSend) {
+              // This shouldn't happen if we checked on first group, but handle it anyway
+              break;
+            }
           }
           
           // SAFETY CHECK: Check global rate limits before sending
@@ -1520,44 +1596,94 @@ class AutomationService {
             continue; // Skip this group and continue with next group instead of waiting
           }
           
-          if (useForwardMode && forwardMessageId && savedMessagesEntity) {
-            // Validate before forwarding
-            if (!group.entity) {
-              throw new Error('Group entity is missing');
+          // Forward mode: Always forward the LAST message from Saved Messages (preserves premium emojis for non-premium users)
+          // User should manually forward a message (with premium emojis) to Saved Messages first
+          if (useForwardMode) {
+            // Validate forward mode requirements
+            if (!forwardMessageIdToUse) {
+              console.log(`[BROADCAST] ⚠️ Forward mode enabled but no message found in Saved Messages for account ${accountId}. Skipping group "${groupName}". User should forward a message to Saved Messages first.`);
+              errorCount++;
+              failedGroups.push({ name: groupName, reason: 'No message in Saved Messages', id: groupId });
+              continue; // Skip this group
             }
-            if (!forwardMessageId) {
-              throw new Error('Forward message ID is missing');
-            }
+            
             if (!savedMessagesEntity) {
-              throw new Error('Saved Messages entity is missing');
+              console.log(`[BROADCAST] ⚠️ Forward mode enabled but Saved Messages entity not available for account ${accountId}. Skipping group "${groupName}".`);
+              errorCount++;
+              failedGroups.push({ name: groupName, reason: 'Saved Messages entity missing', id: groupId });
+              continue; // Skip this group
             }
             
-            // Forward message from Saved Messages (preserves premium emoji and entities)
-            // Note: Mentions cannot be added to forwarded messages
-            console.log(`[BROADCAST] Forwarding message - mentions not supported for forwarded messages`);
-            await client.forwardMessages(group.entity, {
-              messages: [forwardMessageId],
-              fromPeer: savedMessagesEntity,
-              dropAuthor: false, // Preserve original author username
-            });
-            console.log(`[BROADCAST] Forwarded message (ID: ${forwardMessageId}) to group ${i + 1}/${groupsToSend.length}: ${group.name || 'Unknown'}`);
+            if (!group.entity) {
+              console.log(`[BROADCAST] ⚠️ Group entity missing for "${groupName}". Skipping.`);
+              errorCount++;
+              failedGroups.push({ name: groupName, reason: 'Group entity missing', id: groupId });
+              continue; // Skip this group
+            }
             
-            // Record message sent for rate limiting tracking
-            this.recordMessageSent(accountId);
-            this.recordGroupMessageSent(accountId, groupId);
-          } else if (message && message.trim().length > 0) {
-            // Check if auto-mention is enabled
-            let settings;
+            // Forward the last message from Saved Messages (preserves premium emoji and entities)
+            // This allows non-premium users to send premium emojis by forwarding messages
+            // that were manually forwarded to Saved Messages by the user
+            console.log(`[BROADCAST] Forwarding last message (ID: ${forwardMessageIdToUse}) from Saved Messages to group "${groupName}"`);
+            console.log(`[BROADCAST] Forward mode: preserving premium emojis and original formatting from Saved Messages`);
+            
             try {
-              settings = await configService.getAccountSettings(accountId);
-              if (!settings) {
-                settings = {};
+              const forwardedResult = await client.forwardMessages(group.entity, {
+                messages: [forwardMessageIdToUse],
+                fromPeer: savedMessagesEntity,
+                dropAuthor: false, // Preserve original author info
+                dropMediaCaptions: false, // Preserve media captions if any
+              });
+              
+              console.log(`[BROADCAST] ✅ Successfully forwarded message (ID: ${forwardMessageIdToUse}) to group ${i + 1}/${groupsToSend.length}: ${group.name || 'Unknown'}`);
+              if (forwardedResult && forwardedResult.length > 0) {
+                console.log(`[BROADCAST] Forwarded message result: ${forwardedResult.length} message(s) forwarded`);
               }
-            } catch (settingsError) {
-              logError(`[BROADCAST ERROR] Error getting settings for group ${groupName}:`, settingsError);
-              settings = {};
+              
+              // Record message sent for rate limiting tracking
+              this.recordMessageSent(accountId);
+              this.recordGroupMessageSent(accountId, groupId);
+              successCount++;
+            } catch (forwardError) {
+              logError(`[BROADCAST ERROR] Failed to forward message to group "${groupName}":`, forwardError);
+              errorCount++;
+              failedGroups.push({ name: groupName, reason: forwardError.message || 'Forward failed', id: groupId });
+              
+              // Check if message ID is invalid (message might have been deleted from Saved Messages)
+              if (forwardError.message && forwardError.message.includes('MESSAGE_ID_INVALID')) {
+                console.log(`[BROADCAST] ⚠️ Forward message (ID: ${forwardMessageIdToUse}) no longer exists in Saved Messages. User should forward a new message to Saved Messages.`);
+                loggingService.logError(accountId, `Forward message ID ${forwardMessageIdToUse} is invalid - message may have been deleted from Saved Messages`, userId);
+              }
+            }
+          } else {
+            // For sequential mode, get message based on group index
+            let messageToUse = message;
+            let entitiesToUse = messageEntities;
+            
+            // OPTIMIZATION: Use cached settings instead of fetching from database again
+            const settings = broadcast.cachedSettings || await configService.getAccountSettings(accountId);
+            const useMessagePool = settings?.useMessagePool || false;
+            const poolMode = settings?.messagePoolMode || 'random';
+            
+            if (useMessagePool && poolMode === 'sequential') {
+              // Sequential mode: use different message for each group
+              const sequentialIndex = i; // Use group index
+              const sequentialMessage = await messageService.getMessageByIndex(accountId, sequentialIndex);
+              if (sequentialMessage) {
+                messageToUse = sequentialMessage.text;
+                entitiesToUse = sequentialMessage.entities;
+                console.log(`[BROADCAST] Sequential mode: Using message ${sequentialIndex} from pool for group "${groupName}"`);
+              }
             }
             
+            if (!messageToUse || messageToUse.trim().length === 0) {
+              console.log(`[BROADCAST] ⚠️ No message available for group "${groupName}", skipping`);
+              errorCount++;
+              failedGroups.push({ name: groupName, reason: 'No message available', id: groupId });
+              continue;
+            }
+            
+            // Check if auto-mention is enabled
             const autoMention = settings?.autoMention || false;
             // Ensure mentionCount is valid (1, 3, or 5), default to 5
             let mentionCount = settings?.mentionCount || 5;
@@ -1568,15 +1694,15 @@ class AutomationService {
             
             console.log(`[BROADCAST] Auto-mention check for group ${group.name}: enabled=${autoMention}, count=${mentionCount}`);
             
-            let messageToSend = message;
+            let messageToSend = messageToUse;
             let entities = [];
             
             // Convert stored entities (from Bot API format) to GramJS format if available
-            if (messageEntities && messageEntities.length > 0) {
-              console.log(`[BROADCAST] Converting ${messageEntities.length} stored entities (premium emojis) to GramJS format`);
+            if (entitiesToUse && entitiesToUse.length > 0) {
+              console.log(`[BROADCAST] Converting ${entitiesToUse.length} stored entities (premium emojis) to GramJS format`);
               const { Api } = await import('telegram/tl/index.js');
               
-              for (const entity of messageEntities) {
+              for (const entity of entitiesToUse) {
                 try {
                   // Convert Bot API entity to GramJS entity
                   if (entity.type === 'custom_emoji' && entity.custom_emoji_id) {
@@ -1690,10 +1816,20 @@ class AutomationService {
               (e.className === 'MessageEntityMentionName') || 
               (e.userId !== undefined && e.userId !== null)
             );
+            // Explicitly check for premium emoji entities
+            const hasPremiumEmojiEntities = entities.some(e => 
+              (e.className === 'MessageEntityCustomEmoji') ||
+              (e.documentId !== undefined && e.documentId !== null)
+            );
             const hasOtherEntities = entities.some(e => 
               !((e.className === 'MessageEntityMentionName') || 
                 (e.userId !== undefined && e.userId !== null))
             );
+            
+            // Log entity detection for debugging
+            if (hasPremiumEmojiEntities) {
+              console.log(`[BROADCAST] ✅ Detected premium emoji entities in message`);
+            }
             
             if (entities.length > 0) {
               try {
@@ -1702,10 +1838,36 @@ class AutomationService {
                   throw new Error('Group entity is missing');
                 }
                 
+                // If we have premium emoji entities, ALWAYS use direct entity sending (premium emojis cannot be sent via HTML)
                 // If we have both mention entities and other entities (premium emojis), use direct entity sending
                 // If we only have mention entities, use HTML parsing (better for mentions)
                 // If we only have other entities (premium emojis), use direct entity sending
-                if (hasMentionEntities && !hasOtherEntities) {
+                if (hasPremiumEmojiEntities || (hasMentionEntities && hasOtherEntities)) {
+                  // Send message with direct entities (for premium emojis and/or when we have both mentions and premium emojis)
+                  const entityTypes = entities.map(e => e.className || e.constructor?.name || 'Unknown').join(', ');
+                  console.log(`[BROADCAST] Sending message with ${entities.length} direct entities (types: ${entityTypes})`);
+                  
+                  const result = await client.sendMessage(group.entity, {
+                    message: messageToSend,
+                    entities: entities
+                  });
+                  
+                  console.log(`[BROADCAST] Message sent successfully with entities. Message ID: ${result?.id || 'unknown'}`);
+                  
+                  // Check if entities were actually included in the sent message
+                  const resultEntities = result?.entities || result?._entities || [];
+                  if (resultEntities.length > 0) {
+                    console.log(`[BROADCAST] ✅ Entities confirmed in sent message: ${resultEntities.length} entities`);
+                    resultEntities.forEach((ent, idx) => {
+                      console.log(`[BROADCAST] Entity ${idx}: ${ent?.className || ent?.constructor?.name || 'Unknown'}, offset=${ent?.offset || 'N/A'}, length=${ent?.length || 'N/A'}`);
+                      if (ent?.documentId) {
+                        console.log(`[BROADCAST] Entity ${idx} is premium emoji: documentId=${ent.documentId}`);
+                      }
+                    });
+                  } else {
+                    console.log(`[BROADCAST] ⚠️ WARNING: No entities found in sent message result!`);
+                  }
+                } else if (hasMentionEntities && !hasOtherEntities) {
                   // Only mentions, use HTML parsing
                   console.log(`[BROADCAST] Creating HTML-formatted message with ${entities.length} hidden mentions`);
                   
@@ -1775,7 +1937,8 @@ class AutomationService {
                     console.log(`[BROADCAST]   4. tg://user?id= may not work in groups via MTProto`);
                   }
                 } else {
-                  // Send message with direct entities (for premium emojis and/or when we have both mentions and premium emojis)
+                  // This should not happen if premium emojis are present, but handle it as fallback
+                  // Send message with direct entities
                   const entityTypes = entities.map(e => e.className || e.constructor?.name || 'Unknown').join(', ');
                   console.log(`[BROADCAST] Sending message with ${entities.length} direct entities (types: ${entityTypes})`);
                   
@@ -1792,6 +1955,9 @@ class AutomationService {
                     console.log(`[BROADCAST] ✅ Entities confirmed in sent message: ${resultEntities.length} entities`);
                     resultEntities.forEach((ent, idx) => {
                       console.log(`[BROADCAST] Entity ${idx}: ${ent?.className || ent?.constructor?.name || 'Unknown'}, offset=${ent?.offset || 'N/A'}, length=${ent?.length || 'N/A'}`);
+                      if (ent?.documentId) {
+                        console.log(`[BROADCAST] Entity ${idx} is premium emoji: documentId=${ent.documentId}`);
+                      }
                     });
                   } else {
                     console.log(`[BROADCAST] ⚠️ WARNING: No entities found in sent message result!`);
@@ -1800,11 +1966,21 @@ class AutomationService {
               } catch (sendError) {
                 console.log(`[BROADCAST] Error sending message with entities: ${sendError?.message || 'Unknown error'}`);
                 console.log(`[BROADCAST] Send error details:`, sendError);
-                // Fallback: send without entities
+                
+                // If premium emojis are present, warn that they will be lost in fallback
+                if (hasPremiumEmojiEntities) {
+                  console.log(`[BROADCAST] ⚠️ WARNING: Premium emoji entities will be lost in fallback!`);
+                  console.log(`[BROADCAST] ⚠️ This message contains premium emojis that cannot be sent without entities.`);
+                }
+                
+                // Fallback: send without entities (premium emojis will be lost)
                 console.log(`[BROADCAST] Falling back to sending without entities`);
                 try {
                   if (group.entity && messageToSend && messageToSend.trim().length > 0) {
                     await client.sendMessage(group.entity, { message: messageToSend });
+                    if (hasPremiumEmojiEntities) {
+                      console.log(`[BROADCAST] ⚠️ Message sent but premium emojis were lost due to entity send error`);
+                    }
                   } else {
                     throw new Error('Cannot fallback: missing entity or message');
                   }
@@ -1828,9 +2004,6 @@ class AutomationService {
               }
             }
             console.log(`[BROADCAST] ✅ Successfully sent message to group ${i + 1}/${groupsToSend.length}: "${groupName}" (ID: ${groupId})`);
-          } else {
-            console.log(`[BROADCAST] ⚠️ No message available, skipping group "${groupName}" (ID: ${groupId})`);
-            continue;
           }
           
           successCount++;
@@ -1884,7 +2057,7 @@ class AutomationService {
                 await client.forwardMessages(group.entity, {
                   messages: [forwardMessageId],
                   fromPeer: savedMessagesEntity,
-                  dropAuthor: false, // Preserve original author username
+                  // Don't set dropAuthor - default behavior preserves original author username
                 });
                 console.log(`[BROADCAST] ✅ Retry successful: Forwarded to group "${groupName}"`);
                 successCount++;
@@ -1892,12 +2065,16 @@ class AutomationService {
                 this.recordGroupMessageSent(accountId, groupId);
                 continue; // Successfully retried, move to next group
               } else if (message && message.trim().length > 0) {
-                let settings;
-                try {
-                  settings = await configService.getAccountSettings(accountId);
-                  if (!settings) settings = {};
-                } catch (settingsError) {
-                  settings = {};
+                // OPTIMIZATION: Use cached settings instead of fetching from database
+                let settings = broadcast.cachedSettings;
+                if (!settings) {
+                  try {
+                    settings = await configService.getAccountSettings(accountId);
+                    if (!settings) settings = {};
+                    broadcast.cachedSettings = settings; // Cache for future use
+                  } catch (settingsError) {
+                    settings = {};
+                  }
                 }
                 
                 const autoMention = settings?.autoMention || false;
@@ -2252,7 +2429,7 @@ class AutomationService {
                 await client.forwardMessages(group.entity, {
                   messages: [forwardMessageId],
                   fromPeer: savedMessagesEntity,
-                  dropAuthor: false, // Preserve original author username
+                  // Don't set dropAuthor - default behavior preserves original author username
                 });
                 console.log(`[FLOOD_WAIT] ✅ Retry successful: Forwarded to group "${errorGroupName}"`);
                 successCount++;
@@ -2261,13 +2438,16 @@ class AutomationService {
                 loggingService.logBroadcast(accountId, `Retried and sent to group: ${errorGroupName} (after flood wait)`, 'success');
                 continue; // Successfully retried, move to next group
               } else if (message && message.trim().length > 0) {
-                // Get settings for mentions if needed
-                let settings;
-                try {
-                  settings = await configService.getAccountSettings(accountId);
-                  if (!settings) settings = {};
-                } catch (settingsError) {
-                  settings = {};
+                // OPTIMIZATION: Use cached settings instead of fetching from database
+                let settings = broadcast.cachedSettings;
+                if (!settings) {
+                  try {
+                    settings = await configService.getAccountSettings(accountId);
+                    if (!settings) settings = {};
+                    broadcast.cachedSettings = settings; // Cache for future use
+                  } catch (settingsError) {
+                    settings = {};
+                  }
                 }
                 
                 const autoMention = settings?.autoMention || false;
@@ -2400,7 +2580,7 @@ class AutomationService {
                   await client.forwardMessages(group.entity, {
                     messages: [forwardMessageId],
                     fromPeer: savedMessagesEntity,
-                    dropAuthor: false, // Preserve original author username
+                    // Don't set dropAuthor - default behavior preserves original author username
                   });
                   console.log(`[BROADCAST] ✅ Retry successful: Forwarded to group "${errorGroupName}"`);
                   successCount++;

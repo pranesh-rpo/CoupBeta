@@ -1,8 +1,70 @@
+# Dependencies
 node_modules/
+
+# Environment variables
 .env
 .env.backup
+.env.local
+.env.*.local
+netlify/.env
+
+# Sessions
 sessions/
+
+# Logs
 *.log
 logs/
+*.log.*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
+
+# OS files
 .DS_Store
-netlify/.env
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# Build files
+dist/
+build/
+*.tsbuildinfo
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Coverage reports
+coverage/
+.nyc_output/
+*.lcov
+
+# PM2
+.pm2/
+*.pid

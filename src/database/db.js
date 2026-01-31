@@ -96,7 +96,16 @@ class DatabaseWrapper {
       // Handle different query types
       const upperText = convertedSql.trim().toUpperCase();
       
-      if (upperText.startsWith('SELECT') || upperText.startsWith('WITH')) {
+      // Handle PRAGMA statements (they return data like SELECT)
+      if (upperText.startsWith('PRAGMA')) {
+        if (sanitizedParams && sanitizedParams.length > 0) {
+          const result = stmt.all(sanitizedParams);
+          return { rows: result, rowCount: result.length };
+        } else {
+          const result = stmt.all();
+          return { rows: result, rowCount: result.length };
+        }
+      } else if (upperText.startsWith('SELECT') || upperText.startsWith('WITH')) {
         if (sanitizedParams && sanitizedParams.length > 0) {
           const result = stmt.all(sanitizedParams);
           return { rows: result, rowCount: result.length };
@@ -180,7 +189,11 @@ class DatabaseWrapper {
         return { rows: [], rowCount: 0 };
       }
     } catch (error) {
-      logError('[DB] Query error:', error);
+      // Don't log duplicate column errors - these are expected during schema migrations
+      const errorMessage = error?.message || '';
+      if (!errorMessage.includes('duplicate column') && !errorMessage.includes('duplicate column name')) {
+        logError('[DB] Query error:', error);
+      }
       throw error;
     }
   }

@@ -1,6 +1,62 @@
 import db from './db.js';
 import { logError } from '../utils/logger.js';
 
+/**
+ * Check if a column exists in a table
+ * @param {string} tableName - Name of the table
+ * @param {string} columnName - Name of the column
+ * @returns {Promise<boolean>} - True if column exists, false otherwise
+ */
+async function columnExists(tableName, columnName) {
+  try {
+    // PRAGMA table_info returns columns: cid, name, type, notnull, dflt_value, pk
+    // Note: tableName is safe as it comes from our code, not user input
+    // Use quotes around table name for safety
+    const result = await db.query(`PRAGMA table_info("${tableName}")`);
+    if (result && result.rows && Array.isArray(result.rows)) {
+      return result.rows.some(row => row && row.name === columnName);
+    }
+    // Also check if result is an array directly (better-sqlite3 might return array)
+    if (Array.isArray(result)) {
+      return result.some(row => row && row.name === columnName);
+    }
+    return false;
+  } catch (error) {
+    // If table doesn't exist or query fails, column doesn't exist
+    // Log the error for debugging but don't throw
+    if (error.message && !error.message.includes('no such table')) {
+      console.log(`[SCHEMA] Note: Error checking column ${columnName} in ${tableName}: ${error.message}`);
+    }
+    return false;
+  }
+}
+
+/**
+ * Safely add a column to a table if it doesn't exist
+ * @param {string} tableName - Name of the table
+ * @param {string} columnName - Name of the column
+ * @param {string} columnDefinition - Column definition (e.g., "TEXT", "INTEGER DEFAULT 0")
+ */
+async function addColumnIfNotExists(tableName, columnName, columnDefinition) {
+  try {
+    const exists = await columnExists(tableName, columnName);
+    if (exists) {
+      // Column already exists, skip
+      return;
+    }
+    await db.query(`ALTER TABLE "${tableName}" ADD COLUMN "${columnName}" ${columnDefinition}`);
+  } catch (error) {
+    // Silently ignore duplicate column errors - these are expected if column already exists
+    const errorMessage = error?.message || '';
+    if (errorMessage.includes('duplicate column') || errorMessage.includes('duplicate column name')) {
+      // Column already exists, which is fine - silently ignore
+      return;
+    }
+    // Only log non-duplicate errors
+    console.log(`[SCHEMA] Note: Could not add column ${columnName} to ${tableName}: ${errorMessage}`);
+  }
+}
+
 export async function initializeSchema() {
   try {
     db.connect();
@@ -47,6 +103,7 @@ export async function initializeSchema() {
         group_delay_max INTEGER,
         forward_mode INTEGER DEFAULT 0,
         forward_message_id INTEGER,
+        forward_chat_id INTEGER,
         UNIQUE(user_id, phone)
       )
     `);
@@ -66,16 +123,7 @@ export async function initializeSchema() {
     `);
 
     // Add message_entities column if it doesn't exist (for existing databases)
-    try {
-      await db.query(`
-        ALTER TABLE messages ADD COLUMN message_entities TEXT
-      `);
-    } catch (error) {
-      // Column already exists, ignore error
-      if (!error.message.includes('duplicate column')) {
-        console.log('Note: message_entities column may already exist');
-      }
-    }
+    await addColumnIfNotExists('messages', 'message_entities', 'TEXT');
 
     // Create saved_templates table (for Saved Messages sync)
     await db.query(`
@@ -130,6 +178,18 @@ export async function initializeSchema() {
         last_message_sent DATETIME,
         is_active INTEGER DEFAULT 1,
         UNIQUE(account_id, group_id)
+      )
+    `);
+
+    // Create group_links table for storing all group invite links
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS group_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_link TEXT NOT NULL UNIQUE,
+        account_id INTEGER,
+        group_id INTEGER,
+        group_title TEXT,
+        collected_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -383,6 +443,20 @@ export async function initializeSchema() {
       )
     `);
 
+    // Message pool (alternative to A/B testing - supports multiple messages)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS message_pool (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+        message_text TEXT NOT NULL,
+        message_entities TEXT,
+        display_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Create indexes
     await db.query(`CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(user_id, is_active)`);
@@ -395,6 +469,8 @@ export async function initializeSchema() {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_groups_account_id ON groups(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_groups_active ON groups(account_id, is_active)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_group_links_link ON group_links(group_link)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_group_links_account_id ON group_links(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_pending_verifications_user_id ON pending_verifications(user_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_group_categories_account_id ON group_categories(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_group_category_assignments_account_id ON group_category_assignments(account_id)`);
@@ -412,6 +488,8 @@ export async function initializeSchema() {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_auto_reply_rules_account_id ON auto_reply_rules(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_moderation_rules_account_id ON moderation_rules(account_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_ab_testing_analytics_account_id ON ab_testing_analytics(account_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_message_pool_account_id ON message_pool(account_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_message_pool_active ON message_pool(account_id, is_active)`);
 
     // Premium subscriptions table
     await db.query(`
@@ -436,52 +514,50 @@ export async function initializeSchema() {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_status ON premium_subscriptions(status)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_premium_subscriptions_expires_at ON premium_subscriptions(expires_at)`);
 
+    // Payment submissions table for payment verification (manual)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS payment_submissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        transaction_id TEXT NOT NULL,
+        order_id TEXT,
+        amount REAL NOT NULL DEFAULT 30.0,
+        currency TEXT DEFAULT 'INR',
+        payment_method TEXT,
+        payment_gateway TEXT,
+        status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'verified', 'rejected', 'expired')),
+        verification_method TEXT,
+        screenshot_file_id TEXT,
+        screenshot_path TEXT,
+        verified_at DATETIME,
+        verified_by INTEGER,
+        rejection_reason TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(transaction_id)
+      )
+    `);
+
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_payment_submissions_user_id ON payment_submissions(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_payment_submissions_status ON payment_submissions(status)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_payment_submissions_transaction_id ON payment_submissions(transaction_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_payment_submissions_order_id ON payment_submissions(order_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_payment_submissions_created_at ON payment_submissions(created_at DESC)`);
+
     // Add group_delay and forward_mode columns if they don't exist (for existing databases)
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN group_delay_min INTEGER`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN group_delay_max INTEGER`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN forward_mode INTEGER DEFAULT 0`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN forward_message_id INTEGER`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_dm_enabled INTEGER DEFAULT 0`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_dm_message TEXT`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_groups_enabled INTEGER DEFAULT 0`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_groups_message TEXT`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
-    try {
-      await db.query(`ALTER TABLE accounts ADD COLUMN auto_reply_check_interval INTEGER DEFAULT 30`);
-    } catch (error) {
-      // Column already exists, ignore error
-    }
+    await addColumnIfNotExists('accounts', 'group_delay_min', 'INTEGER');
+    await addColumnIfNotExists('accounts', 'group_delay_max', 'INTEGER');
+    await addColumnIfNotExists('accounts', 'forward_mode', 'INTEGER DEFAULT 0');
+    await addColumnIfNotExists('accounts', 'forward_message_id', 'INTEGER');
+    await addColumnIfNotExists('accounts', 'forward_chat_id', 'INTEGER');
+    await addColumnIfNotExists('accounts', 'auto_reply_dm_enabled', 'INTEGER DEFAULT 0');
+    await addColumnIfNotExists('accounts', 'auto_reply_dm_message', 'TEXT');
+    await addColumnIfNotExists('accounts', 'auto_reply_groups_enabled', 'INTEGER DEFAULT 0');
+    await addColumnIfNotExists('accounts', 'auto_reply_groups_message', 'TEXT');
+    await addColumnIfNotExists('accounts', 'auto_reply_check_interval', 'INTEGER DEFAULT 30');
+    await addColumnIfNotExists('accounts', 'use_message_pool', 'INTEGER DEFAULT 0');
+    await addColumnIfNotExists('accounts', 'message_pool_mode', 'TEXT DEFAULT \'random\'');
+    await addColumnIfNotExists('accounts', 'message_pool_last_index', 'INTEGER DEFAULT 0');
     
     // Update existing accounts with NULL or 0 to default to 30 seconds
     try {

@@ -21,20 +21,21 @@ class ConfigService {
           cap_reset_date,
           quiet_start,
           quiet_end,
-          ab_mode,
-          ab_mode_type,
-          ab_last_variant,
           auto_mention,
           mention_count,
           group_delay_min,
           group_delay_max,
           forward_mode,
           forward_message_id,
+          forward_chat_id,
           auto_reply_dm_enabled,
           auto_reply_dm_message,
           auto_reply_groups_enabled,
           auto_reply_groups_message,
-          auto_reply_check_interval
+          auto_reply_check_interval,
+          use_message_pool,
+          message_pool_mode,
+          message_pool_last_index
          FROM accounts 
          WHERE account_id = $1`,
         [accountId]
@@ -52,20 +53,21 @@ class ConfigService {
         capResetDate: row.cap_reset_date,
         quietStart: row.quiet_start,
         quietEnd: row.quiet_end,
-        abMode: row.ab_mode || false,
-        abModeType: row.ab_mode_type || 'single',
-        abLastVariant: row.ab_last_variant || 'A',
         autoMention: row.auto_mention || false,
         mentionCount: [1, 3, 5].includes(row.mention_count) ? row.mention_count : 5,
         groupDelayMin: row.group_delay_min,
         groupDelayMax: row.group_delay_max,
         forwardMode: row.forward_mode === 1, // Convert INTEGER to boolean
         forwardMessageId: row.forward_message_id,
+        forwardChatId: row.forward_chat_id,
         autoReplyDmEnabled: row.auto_reply_dm_enabled === 1,
         autoReplyDmMessage: row.auto_reply_dm_message,
         autoReplyGroupsEnabled: row.auto_reply_groups_enabled === 1,
         autoReplyGroupsMessage: row.auto_reply_groups_message,
         autoReplyCheckInterval: row.auto_reply_check_interval !== null && row.auto_reply_check_interval !== undefined ? row.auto_reply_check_interval : 30, // Default 30 seconds, 0 = real-time, >0 = interval in seconds
+        useMessagePool: row.use_message_pool === 1,
+        messagePoolMode: row.message_pool_mode || 'random',
+        messagePoolLastIndex: row.message_pool_last_index || 0,
       };
     } catch (error) {
       logger.logError('CONFIG', null, error, `Failed to get account settings for account ${accountId}`);
@@ -202,49 +204,64 @@ class ConfigService {
   }
 
   /**
-   * Set A/B testing mode
+   * Enable/disable message pool
    * @param {number} accountId - Account ID
-   * @param {boolean} enabled - Enable A/B testing
-   * @param {string} modeType - 'single', 'rotate', or 'split'
+   * @param {boolean} enabled - Enable or disable
    */
-  async setABMode(accountId, enabled, modeType = 'single') {
+  async setMessagePoolEnabled(accountId, enabled) {
     try {
-      if (!['single', 'rotate', 'split'].includes(modeType)) {
-        return { success: false, error: 'Invalid A/B mode type' };
-      }
-      
       await db.query(
-        'UPDATE accounts SET ab_mode = $1, ab_mode_type = $2, updated_at = CURRENT_TIMESTAMP WHERE account_id = $3',
-        [enabled, modeType, accountId]
+        'UPDATE accounts SET use_message_pool = $1 WHERE account_id = $2',
+        [enabled ? 1 : 0, accountId]
       );
       
-      logger.logChange('CONFIG', accountId, `A/B mode ${enabled ? 'enabled' : 'disabled'} (type: ${modeType})`);
+      logger.logChange('CONFIG', accountId, `Message pool ${enabled ? 'enabled' : 'disabled'}`);
       return { success: true };
     } catch (error) {
-      logger.logError('CONFIG', accountId, error, 'Failed to set A/B mode');
+      logger.logError('CONFIG', accountId, error, 'Failed to set message pool enabled');
       throw error;
     }
   }
 
   /**
-   * Update A/B last variant (for rotate mode)
+   * Update message pool mode
    * @param {number} accountId - Account ID
-   * @param {string} variant - 'A' or 'B'
+   * @param {string} mode - 'random', 'rotate', or 'sequential'
    */
-  async updateABLastVariant(accountId, variant) {
+  async updateMessagePoolMode(accountId, mode) {
     try {
-      if (!['A', 'B'].includes(variant)) {
-        return { success: false, error: 'Invalid variant' };
+      if (!['random', 'rotate', 'sequential'].includes(mode)) {
+        return { success: false, error: 'Invalid mode. Must be random, rotate, or sequential' };
       }
       
       await db.query(
-        'UPDATE accounts SET ab_last_variant = $1 WHERE account_id = $2',
-        [variant, accountId]
+        'UPDATE accounts SET message_pool_mode = $1, use_message_pool = 1 WHERE account_id = $2',
+        [mode, accountId]
+      );
+      
+      logger.logChange('CONFIG', accountId, `Message pool mode set to ${mode}`);
+      return { success: true };
+    } catch (error) {
+      logger.logError('CONFIG', accountId, error, 'Failed to update message pool mode');
+      throw error;
+    }
+  }
+
+  /**
+   * Update message pool last index (for rotate mode)
+   * @param {number} accountId - Account ID
+   * @param {number} index - Last used index
+   */
+  async updateMessagePoolLastIndex(accountId, index) {
+    try {
+      await db.query(
+        'UPDATE accounts SET message_pool_last_index = $1 WHERE account_id = $2',
+        [index, accountId]
       );
       
       return { success: true };
     } catch (error) {
-      logger.logError('CONFIG', accountId, error, 'Failed to update A/B last variant');
+      logger.logError('CONFIG', accountId, error, 'Failed to update message pool last index');
       throw error;
     }
   }
@@ -296,18 +313,19 @@ class ConfigService {
   }
 
   /**
-   * Set forward message ID (ID of message in Saved Messages to forward)
+   * Set forward message ID and chat ID (from bot conversation where message was set)
    * @param {number} accountId - Account ID
-   * @param {number|null} messageId - Message ID in Saved Messages (null to clear)
+   * @param {number|null} messageId - Message ID in bot chat (null to clear)
+   * @param {number|null} chatId - Chat ID where message was set (bot chat) (null to clear)
    */
-  async setForwardMessageId(accountId, messageId) {
+  async setForwardMessageId(accountId, messageId, chatId = null) {
     try {
       await db.query(
-        'UPDATE accounts SET forward_message_id = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2',
-        [messageId, accountId]
+        'UPDATE accounts SET forward_message_id = $1, forward_chat_id = $2, updated_at = CURRENT_TIMESTAMP WHERE account_id = $3',
+        [messageId, chatId, accountId]
       );
       
-      logger.logChange('CONFIG', accountId, `Forward message ID set to ${messageId || 'none'}`);
+      logger.logChange('CONFIG', accountId, `Forward message ID set to ${messageId || 'none'} from chat ${chatId || 'none'}`);
       return { success: true };
     } catch (error) {
       logger.logError('CONFIG', accountId, error, 'Failed to set forward message ID');

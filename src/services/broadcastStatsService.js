@@ -83,22 +83,155 @@ class BroadcastStatsService {
    */
   async getSummary(accountId, days = 30) {
     try {
-      // SQLite uses date() function instead of INTERVAL syntax
+      // Calculate start date
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      
       const result = await db.query(
         `SELECT 
            COUNT(*) as total_broadcasts,
            SUM(messages_sent) as total_sent,
            SUM(messages_failed) as total_failed,
            AVG(success_rate) as avg_success_rate,
-           MAX(broadcast_date) as last_broadcast
+           MAX(broadcast_date) as last_broadcast,
+           MIN(broadcast_date) as first_broadcast
          FROM broadcast_stats
-         WHERE account_id = ? AND broadcast_date >= date('now', '-${days} days')`,
-        [accountId]
+         WHERE account_id = ? AND broadcast_date >= ?`,
+        [accountId, startDateStr]
       );
       return { success: true, summary: result.rows[0] };
     } catch (error) {
       logger.logError('STATS', accountId, error, 'Failed to get summary');
       return { success: false, error: error.message, summary: null };
+    }
+  }
+
+  /**
+   * Get statistics for a specific period (week, month, etc.)
+   */
+  async getPeriodStats(accountId, days) {
+    try {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      
+      const result = await db.query(
+        `SELECT 
+           COUNT(*) as total_broadcasts,
+           SUM(messages_sent) as total_sent,
+           SUM(messages_failed) as total_failed,
+           AVG(success_rate) as avg_success_rate,
+           MAX(success_rate) as max_success_rate,
+           MIN(success_rate) as min_success_rate,
+           SUM(total_groups) as total_groups_reached
+         FROM broadcast_stats
+         WHERE account_id = ? AND broadcast_date >= ?`,
+        [accountId, startDateStr]
+      );
+      return { success: true, stats: result.rows[0] };
+    } catch (error) {
+      logger.logError('STATS', accountId, error, 'Failed to get period stats');
+      return { success: false, error: error.message, stats: null };
+    }
+  }
+
+  /**
+   * Get comparison with previous period
+   */
+  async getPeriodComparison(accountId, days) {
+    try {
+      const currentStart = new Date();
+      currentStart.setDate(currentStart.getDate() - days);
+      const currentStartStr = currentStart.toISOString().split('T')[0];
+      
+      const previousStart = new Date();
+      previousStart.setDate(previousStart.getDate() - (days * 2));
+      const previousStartStr = previousStart.toISOString().split('T')[0];
+      const previousEndStr = currentStartStr;
+      
+      const currentPeriod = await db.query(
+        `SELECT 
+           SUM(messages_sent) as total_sent,
+           SUM(messages_failed) as total_failed,
+           AVG(success_rate) as avg_success_rate
+         FROM broadcast_stats
+         WHERE account_id = ? AND broadcast_date >= ?`,
+        [accountId, currentStartStr]
+      );
+
+      const previousPeriod = await db.query(
+        `SELECT 
+           SUM(messages_sent) as total_sent,
+           SUM(messages_failed) as total_failed,
+           AVG(success_rate) as avg_success_rate
+         FROM broadcast_stats
+         WHERE account_id = ? AND broadcast_date >= ? AND broadcast_date < ?`,
+        [accountId, previousStartStr, previousEndStr]
+      );
+
+      return {
+        success: true,
+        current: currentPeriod.rows[0] || { total_sent: 0, total_failed: 0, avg_success_rate: 0 },
+        previous: previousPeriod.rows[0] || { total_sent: 0, total_failed: 0, avg_success_rate: 0 }
+      };
+    } catch (error) {
+      logger.logError('STATS', accountId, error, 'Failed to get period comparison');
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get daily trend for the last N days
+   */
+  async getDailyTrend(accountId, days = 7) {
+    try {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      
+      const result = await db.query(
+        `SELECT 
+           broadcast_date,
+           messages_sent,
+           messages_failed,
+           success_rate,
+           total_groups
+         FROM broadcast_stats
+         WHERE account_id = ? AND broadcast_date >= ?
+         ORDER BY broadcast_date ASC`,
+        [accountId, startDateStr]
+      );
+      return { success: true, trend: result.rows };
+    } catch (error) {
+      logger.logError('STATS', accountId, error, 'Failed to get daily trend');
+      return { success: false, error: error.message, trend: [] };
+    }
+  }
+
+  /**
+   * Get all-time statistics
+   */
+  async getAllTimeStats(accountId) {
+    try {
+      const result = await db.query(
+        `SELECT 
+           COUNT(*) as total_broadcasts,
+           SUM(messages_sent) as total_sent,
+           SUM(messages_failed) as total_failed,
+           AVG(success_rate) as avg_success_rate,
+           MAX(broadcast_date) as last_broadcast,
+           MIN(broadcast_date) as first_broadcast,
+           MAX(success_rate) as best_day_rate,
+           MIN(success_rate) as worst_day_rate
+         FROM broadcast_stats
+         WHERE account_id = ?`,
+        [accountId]
+      );
+      return { success: true, stats: result.rows[0] };
+    } catch (error) {
+      logger.logError('STATS', accountId, error, 'Failed to get all-time stats');
+      return { success: false, error: error.message, stats: null };
     }
   }
 }

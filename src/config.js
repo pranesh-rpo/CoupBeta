@@ -98,6 +98,7 @@ export const config = {
   webhookPort: parseInt(process.env.WEBHOOK_PORT) || 3000, // Port for webhook server
   webhookSecretToken: process.env.WEBHOOK_SECRET_TOKEN || '', // Optional secret token for webhook verification
   
+  
   // Profile Settings
   firstName: process.env.FIRSTNAME || '', // First name for account profile
   lastNameTag: process.env.LASTNAME_TAG || '| Coup Bot 🪽', // Last name tag for account profile

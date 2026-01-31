@@ -13,6 +13,10 @@ import logger from '../utils/logger.js';
 import adminNotifier from '../services/adminNotifier.js';
 import { isFloodWaitError, extractWaitTime, waitForFloodError, safeBotApiCall } from '../utils/floodWaitHandler.js';
 import { validateUserId, sanitizeErrorMessage, adminCommandRateLimiter } from '../utils/security.js';
+import groupService from '../services/groupService.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 let adminBot = null;
 let mainBot = null; // Reference to main bot for sending messages to users
@@ -112,7 +116,7 @@ export function initializeAdminBot(mainBotInstance = null) {
         }
       },
       request: {
-        timeout: 60000, // 60 seconds timeout for requests
+        timeout: 90000, // 90 seconds timeout for requests (increased from 60s to handle slow networks)
         agentOptions: {
           keepAlive: true,
           keepAliveMsecs: 10000
@@ -152,7 +156,10 @@ export function initializeAdminBot(mainBotInstance = null) {
         errorStack.includes('ETIMEDOUT') ||
         errorStack.includes('ESOCKETTIMEDOUT');
       
-      console.error('[ADMIN BOT] Polling error:', error);
+      // Only log full error details if it's not a timeout (timeouts are logged separately below)
+      if (!isTimeoutError) {
+        console.error('[ADMIN BOT] Polling error:', error);
+      }
       
       // Handle 409 Conflict error - another instance is polling
       if (isConflictError) {
@@ -184,9 +191,13 @@ export function initializeAdminBot(mainBotInstance = null) {
       
       // Handle timeout errors gracefully - these are often transient network issues
       if (isTimeoutError) {
-        console.warn('[ADMIN BOT] Polling timeout detected - will retry automatically');
-        logger.logError('ADMIN_BOT', null, error, 'Admin bot polling timeout - will retry');
+        // Timeout errors are expected and handled automatically - log as warning, not error
+        console.warn(`[ADMIN BOT] Polling timeout detected (attempt ${pollingRetryCount + 1}/${MAX_POLLING_RETRIES}) - will retry automatically`);
+        // Don't log timeout errors to error log - they're expected network issues
+        // logger.logError('ADMIN_BOT', null, error, 'Admin bot polling timeout - will retry');
       } else {
+        // Only log non-timeout errors with full details
+        console.error('[ADMIN BOT] Polling error:', error);
         logger.logError('ADMIN_BOT', null, error, 'Admin bot polling error');
       }
       
@@ -224,13 +235,15 @@ export function initializeAdminBot(mainBotInstance = null) {
         errorMessage.includes('ECONNREFUSED') ||
         (errorCause && errorCause.code === 'ECONNREFUSED');
       
-      console.error('[ADMIN BOT] Error:', error);
-      
       // Handle timeout errors - these are often transient network issues
       if (isTimeoutError) {
-        console.warn('[ADMIN BOT] Request timeout detected - will retry automatically');
-        logger.logError('ADMIN_BOT', null, error, 'Admin bot request timeout - will retry');
+        // Timeout errors are expected - log as warning, not error
+        console.warn('[ADMIN BOT] Request timeout detected - this is usually a transient network issue');
+        // Don't log timeout errors to error log - they're expected network issues
+        // logger.logError('ADMIN_BOT', null, error, 'Admin bot request timeout - will retry');
       } else {
+        // Only log non-timeout errors with full details
+        console.error('[ADMIN BOT] Error:', error);
         logger.logError('ADMIN_BOT', null, error, 'Admin bot error');
       }
       
@@ -324,6 +337,7 @@ function registerAdminCommands(bot) {
       `/accounts - List recent accounts\n` +
       `/broadcasts - View active broadcasts\n` +
       `/groups - List groups by account\n` +
+      `/links - Collect all group links (as text file)\n` +
       `/database - Database statistics\n\n` +
       `<b>👁️ Monitoring:</b>\n` +
       `/logs - View recent logs\n` +
@@ -1238,6 +1252,7 @@ function registerAdminCommands(bot) {
         `/accounts - List recent accounts (last 20)\n` +
         `/broadcasts - View active broadcasts\n` +
         `/groups - List all groups\n` +
+        `/links - Collect all group links (as text file)\n` +
         `/database - Database statistics\n\n` +
         `<b>👁️ Monitoring:</b>\n` +
         `/logs - View recent logs (last 10)\n` +
@@ -1525,6 +1540,266 @@ function registerAdminCommands(bot) {
         );
       }
     } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  // Payment verification admin commands
+  bot.onText(/\/payment_pending/, async (msg) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const paymentVerificationService = (await import('../services/paymentVerificationService.js')).default;
+      const pendingSubmissions = await paymentVerificationService.getPendingSubmissions();
+
+      if (pendingSubmissions.length === 0) {
+        await bot.sendMessage(msg.chat.id, '📭 No pending payment submissions.');
+        return;
+      }
+
+      let message = `╔═══════════════════════════╗\n║  📋 <b>PENDING PAYMENTS</b>    ║\n╚═══════════════════════════╝\n\n`;
+      
+      for (const submission of pendingSubmissions.slice(0, 10)) {
+        message += `┌───────────────────────────┐\n`;
+        message += `│ <b>ID:</b> ${submission.id}\n`;
+        message += `│ <b>User:</b> ${submission.user_id} (@${submission.username || 'N/A'})\n`;
+        message += `│ <b>TXN ID:</b> <code>${submission.transaction_id}</code>\n`;
+        message += `│ <b>Amount:</b> ₹${submission.amount}\n`;
+        message += `│ <b>Method:</b> ${submission.payment_method || 'N/A'}\n`;
+        message += `│ <b>Gateway:</b> ${submission.payment_gateway || 'Manual'}\n`;
+        message += `│ <b>Created:</b> ${new Date(submission.created_at).toLocaleString()}\n`;
+        message += `└───────────────────────────┘\n\n`;
+      }
+
+      message += `\n<b>Commands:</b>\n/payment_verify [ID] - Verify payment\n/payment_reject [ID] [reason] - Reject payment`;
+
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  bot.onText(/\/payment_verify (.+)/, async (msg, match) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const submissionId = parseInt(match[1]);
+      if (isNaN(submissionId)) {
+        await bot.sendMessage(msg.chat.id, '❌ Invalid submission ID');
+        return;
+      }
+
+      const paymentVerificationService = (await import('../services/paymentVerificationService.js')).default;
+      const result = await paymentVerificationService.adminVerifyPayment(submissionId, adminUserId);
+
+      if (result.success) {
+        const expiresAt = new Date(result.subscription.expires_at);
+        const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
+          day: 'numeric', 
+          month: 'long', 
+          year: 'numeric' 
+        });
+
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ <b>Payment Verified</b>\n\nPremium subscription activated.\n\n<b>Expires:</b> ${expiresAtFormatted}`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        await bot.sendMessage(msg.chat.id, `❌ Failed: ${result.error}`, { parse_mode: 'HTML' });
+      }
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  bot.onText(/\/payment_reject (.+)/, async (msg, match) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const parts = match[1].split(' ');
+      const submissionId = parseInt(parts[0]);
+      const reason = parts.slice(1).join(' ') || 'No reason provided';
+
+      if (isNaN(submissionId)) {
+        await bot.sendMessage(msg.chat.id, '❌ Invalid submission ID');
+        return;
+      }
+
+      const paymentVerificationService = (await import('../services/paymentVerificationService.js')).default;
+      const result = await paymentVerificationService.adminRejectPayment(submissionId, adminUserId, reason);
+
+      if (result.success) {
+        await bot.sendMessage(msg.chat.id, `✅ Payment rejected: ${reason}`, { parse_mode: 'HTML' });
+      } else {
+        await bot.sendMessage(msg.chat.id, `❌ Failed: ${result.error}`, { parse_mode: 'HTML' });
+      }
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error, false);
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
+    }
+  });
+
+  // /links command - Collect all group links from all accounts and return as text file
+  bot.onText(/\/links/, async (msg) => {
+    const adminUserId = validateUserId(msg.from?.id);
+    if (!adminUserId || !isAdmin(adminUserId)) {
+      await bot.sendMessage(msg.chat.id, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      // Send status message
+      const statusMsg = await bot.sendMessage(
+        msg.chat.id,
+        '🔗 Collecting group links from all accounts...\n\n⏳ This may take a while, please wait.',
+        { parse_mode: 'HTML' }
+      );
+
+      // Get all active accounts
+      const accounts = await db.query(
+        'SELECT account_id, user_id, phone FROM accounts WHERE is_active = TRUE'
+      );
+
+      if (accounts.rows.length === 0) {
+        await bot.editMessageText('❌ No active accounts found.', {
+          chat_id: msg.chat.id,
+          message_id: statusMsg.message_id,
+        });
+        return;
+      }
+
+      const allLinks = new Set(); // Use Set to automatically handle duplicates
+      let processedAccounts = 0;
+      let totalGroups = 0;
+
+      // Process each account
+      for (const account of accounts.rows) {
+        try {
+          const accountId = account.account_id;
+          let client = null;
+
+          try {
+            // Get client for this account
+            client = await accountLinker.getClientAndConnect(null, accountId);
+            if (!client) {
+              console.log(`[LINKS] Skipping account ${accountId} - client not available`);
+              continue;
+            }
+
+            // Get dialogs for this account
+            const dialogs = await client.getDialogs();
+            const groups = dialogs.filter(dialog => (dialog.isGroup || dialog.isChannel));
+
+            // Collect links from this account's groups (silent mode to reduce logs)
+            const accountLinks = await groupService.collectGroupLinks(client, accountId, groups, true);
+            
+            // Add to master set (automatically handles duplicates)
+            accountLinks.forEach(link => allLinks.add(link));
+            totalGroups += groups.length;
+            processedAccounts++;
+
+            // Disconnect client
+            if (client && client.connected) {
+              await client.disconnect();
+            }
+          } catch (accountError) {
+            logger.logError('LINKS', accountId, accountError, `Error processing account ${accountId}`);
+            if (client && client.connected) {
+              try {
+                await client.disconnect();
+              } catch (disconnectError) {
+                // Ignore disconnect errors
+              }
+            }
+            continue;
+          }
+        } catch (error) {
+          logger.logError('LINKS', account.account_id, error, `Error processing account ${account.account_id}`);
+          continue;
+        }
+      }
+
+      // Convert Set to Array and sort
+      const uniqueLinks = Array.from(allLinks).sort();
+
+      if (uniqueLinks.length === 0) {
+        await bot.editMessageText(
+          '❌ No group links found. Make sure accounts have groups and you have permission to access invite links.',
+          {
+            chat_id: msg.chat.id,
+            message_id: statusMsg.message_id,
+          }
+        );
+        return;
+      }
+
+      // Create text file content
+      const fileContent = uniqueLinks.join('\n');
+      const fileName = `group_links_${Date.now()}.txt`;
+
+      // Get directory for temporary files
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+      const tempDir = path.join(__dirname, '../../temp');
+      
+      // Ensure temp directory exists
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+
+      const filePath = path.join(tempDir, fileName);
+
+      // Write file
+      fs.writeFileSync(filePath, fileContent, 'utf8');
+
+      // Send file
+      await bot.sendDocument(
+        msg.chat.id,
+        filePath,
+        {
+          caption: `✅ <b>Group Links Collected</b>\n\n` +
+            `📊 <b>Statistics:</b>\n` +
+            `• Accounts Processed: ${processedAccounts}/${accounts.rows.length}\n` +
+            `• Total Groups: ${totalGroups}\n` +
+            `• Unique Links: ${uniqueLinks.length}\n\n` +
+            `<i>File generated at ${new Date().toLocaleString()}</i>`,
+          parse_mode: 'HTML'
+        }
+      );
+
+      // Delete status message
+      await bot.deleteMessage(msg.chat.id, statusMsg.message_id);
+
+      // Clean up temp file after a delay
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
+        } catch (cleanupError) {
+          // Ignore cleanup errors
+        }
+      }, 60000); // Delete after 1 minute
+
+      logger.logChange('ADMIN_LINKS', adminUserId, `Collected ${uniqueLinks.length} unique group links from ${processedAccounts} accounts`);
+    } catch (error) {
+      logger.logError('LINKS', adminUserId, error, 'Error collecting group links');
       const safeErrorMessage = sanitizeErrorMessage(error, false);
       await bot.sendMessage(msg.chat.id, `❌ Error: ${safeErrorMessage}`);
     }

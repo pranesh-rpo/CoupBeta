@@ -1,6 +1,7 @@
 /**
  * Auto Reply Handler
- * Handles incoming messages and sends auto-replies
+ * Handles incoming messages and sends auto-replies using Telegram Client API
+ * Event-driven architecture - no polling
  */
 
 import { NewMessage } from 'telegram/events/index.js';
@@ -9,39 +10,103 @@ import { logError } from '../utils/logger.js';
 
 class AutoReplyHandler {
   constructor() {
-    // Track which chats have already received auto-replies
-    // Format: "accountId_chatId" -> { lastReplyTime, processing: Set<messageId> }
+    // Track which chats have already received auto-replies (30-min cooldown)
+    // Format: "accountId_chatId" -> timestamp
     this.repliedChats = new Map();
-    // Track messages currently being processed to prevent race conditions
-    this.processingMessages = new Set();
+    
+    // Track processed message IDs to prevent duplicate processing
+    // Format: "accountId_chatId_messageId" -> timestamp
+    this.processedMessages = new Map();
+    
+    // Track registered handlers per client to prevent duplicates
+    // Format: "clientId_accountId" -> handler function
+    this.registeredHandlers = new Map();
+    
+    // Track accounts we've already logged "already registered" message for
+    // Format: accountId -> true
+    this.loggedAlreadyRegistered = new Set();
+    
+    // Cleanup old entries periodically
+    this.startCleanupInterval();
   }
 
   /**
-   * Get unique key for a chat
+   * Start periodic cleanup of old entries
    */
-  getChatKey(accountId, chatId) {
+  startCleanupInterval() {
+    setInterval(() => {
+      this.cleanupOldEntries();
+    }, 60 * 60 * 1000); // Every hour
+  }
+
+  /**
+   * Cleanup old processed messages and expired cooldowns
+   */
+  cleanupOldEntries() {
+    const now = Date.now();
+    const thirtyMinutesAgo = now - (30 * 60 * 1000);
+    
+    // Cleanup processed messages older than 1 hour
+    const oneHourAgo = now - (60 * 60 * 1000);
+    for (const [key, timestamp] of this.processedMessages.entries()) {
+      if (timestamp < oneHourAgo) {
+        this.processedMessages.delete(key);
+      }
+    }
+    
+    // Cleanup expired cooldowns
+    for (const [key, timestamp] of this.repliedChats.entries()) {
+      if (timestamp < thirtyMinutesAgo) {
+        this.repliedChats.delete(key);
+      }
+    }
+    
+    // Limit processed messages to 1000 entries
+    if (this.processedMessages.size > 1000) {
+      const entries = Array.from(this.processedMessages.entries())
+        .sort((a, b) => b[1] - a[1]) // Sort by timestamp, newest first
+        .slice(0, 500); // Keep 500 most recent
+      this.processedMessages.clear();
+      entries.forEach(([k, v]) => this.processedMessages.set(k, v));
+    }
+  }
+
+  /**
+   * Get unique key for tracking
+   */
+  getKey(accountId, chatId, messageId = null) {
+    if (messageId) {
+      return `${accountId}_${chatId}_${messageId}`;
+    }
     return `${accountId}_${chatId}`;
   }
 
   /**
-   * Get unique key for a message being processed
+   * Check if message has already been processed
    */
-  getMessageKey(accountId, chatId, messageId) {
-    return `${accountId}_${chatId}_${messageId}`;
+  hasProcessedMessage(accountId, chatId, messageId) {
+    const key = this.getKey(accountId, chatId, messageId);
+    return this.processedMessages.has(key);
   }
 
   /**
-   * Check if we've already replied to this chat recently (within last 30 minutes)
+   * Mark message as processed
+   */
+  markMessageProcessed(accountId, chatId, messageId) {
+    const key = this.getKey(accountId, chatId, messageId);
+    this.processedMessages.set(key, Date.now());
+  }
+
+  /**
+   * Check if we've already replied to this chat recently (30-minute cooldown)
    */
   hasRepliedToChatRecently(accountId, chatId) {
-    const key = this.getChatKey(accountId, chatId);
-    const data = this.repliedChats.get(key);
-    if (!data) return false;
+    const key = this.getKey(accountId, chatId);
+    const lastReplyTime = this.repliedChats.get(key);
+    if (!lastReplyTime) return false;
     
-    // Check if last reply was within 30 minutes
     const thirtyMinutesAgo = Date.now() - (30 * 60 * 1000);
-    if (data.lastReplyTime < thirtyMinutesAgo) {
-      // Cooldown expired, remove entry
+    if (lastReplyTime < thirtyMinutesAgo) {
       this.repliedChats.delete(key);
       return false;
     }
@@ -50,182 +115,110 @@ class AutoReplyHandler {
   }
 
   /**
-   * Mark chat as replied to (with 30-minute cooldown)
+   * Mark chat as replied to (30-minute cooldown)
    */
   markChatAsReplied(accountId, chatId) {
-    const key = this.getChatKey(accountId, chatId);
-    this.repliedChats.set(key, {
-      lastReplyTime: Date.now()
-    });
+    const key = this.getKey(accountId, chatId);
+    this.repliedChats.set(key, Date.now());
   }
 
   /**
-   * Check if message is currently being processed
+   * Extract chat ID from message/chat object
    */
-  isProcessingMessage(accountId, chatId, messageId) {
-    const msgKey = this.getMessageKey(accountId, chatId, messageId);
-    return this.processingMessages.has(msgKey);
-  }
-
-  /**
-   * Mark message as being processed
-   */
-  markMessageProcessing(accountId, chatId, messageId) {
-    const msgKey = this.getMessageKey(accountId, chatId, messageId);
-    this.processingMessages.add(msgKey);
-    
-    // Auto-cleanup after 30 seconds
-    setTimeout(() => {
-      this.processingMessages.delete(msgKey);
-    }, 30000);
-  }
-
-  /**
-   * Clear message processing flag
-   */
-  clearMessageProcessing(accountId, chatId, messageId) {
-    const msgKey = this.getMessageKey(accountId, chatId, messageId);
-    this.processingMessages.delete(msgKey);
-  }
-
-  /**
-   * Setup auto-reply handler for a client
-   */
-  async setupAutoReply(client, accountId) {
-    if (!client) return;
-
-    // Always use real-time mode (interval mode removed)
-    // Remove existing handler if any (to avoid duplicates)
-    this.removeAutoReply(client);
-
-    // Add NewMessage event handler (real-time mode)
-    // Note: NewMessage events are already filtered to incoming messages by default
-    client.addEventHandler(
-      async (event) => {
-        console.log(`[AUTO_REPLY] NewMessage event received for account ${accountId}`);
-        try {
-          await this.handleIncomingMessage(event, accountId, client);
-        } catch (error) {
-          logError(`[AUTO_REPLY] Error handling message for account ${accountId}:`, error);
-        }
-      },
-      new NewMessage({})
-    );
-
-    console.log(`[AUTO_REPLY] Real-time handler set up for account ${accountId}`);
-  }
-
-  /**
-   * Remove auto-reply handler from a client
-   */
-  removeAutoReply(client) {
-    if (!client) return;
-    
-    try {
-      // Remove all NewMessage handlers
-      const handlers = client.listEventHandlers(NewMessage);
-      for (const handler of handlers) {
-        client.removeEventHandler(handler);
-      }
-    } catch (error) {
-      // Ignore errors when removing handlers
-      console.log(`[AUTO_REPLY] Error removing handlers: ${error.message}`);
+  extractChatId(chat, message) {
+    // Method 1: Direct from chat.id
+    if (chat && chat.id !== null && chat.id !== undefined) {
+      return typeof chat.id === 'bigint' ? chat.id.toString() : String(chat.id);
     }
+    
+    // Method 2: From message.peerId
+    if (message && message.peerId) {
+      if (message.peerId.userId !== null && message.peerId.userId !== undefined) {
+        return String(message.peerId.userId);
+      }
+      if (message.peerId.channelId !== null && message.peerId.channelId !== undefined) {
+        return String(message.peerId.channelId);
+      }
+      if (message.peerId.chatId !== null && message.peerId.chatId !== undefined) {
+        return String(message.peerId.chatId);
+      }
+    }
+    
+    return null;
   }
 
   /**
-   * Check if message is a reply to the account's message
+   * Check if message is from ourselves
    */
-  async isReplyToAccount(message, client, accountId) {
-    try {
-      // Check if message has a reply
-      if (!message.replyTo && !message.replyToMsgId) {
-        return false;
-      }
+  isMessageFromSelf(message, meId) {
+    if (!message.fromId) return false;
+    
+    let senderId = null;
+    if (message.fromId.className === 'PeerUser') {
+      senderId = message.fromId.userId;
+    } else if (message.fromId.userId !== undefined) {
+      senderId = message.fromId.userId;
+    }
+    
+    if (senderId === null || senderId === undefined) return false;
+    
+    const senderIdNum = typeof senderId === 'bigint' ? Number(senderId) : senderId;
+    const meIdNum = typeof meId === 'bigint' ? Number(meId) : meId;
+    return senderIdNum === meIdNum;
+  }
 
-      // Get the replied-to message
-      let repliedToMessage = null;
-      if (message.replyTo) {
-        // Try to get the message from replyTo
+  /**
+   * Check if message sender is a bot
+   */
+  async isSenderBot(message, client) {
+    try {
+      if (message.sender && message.sender.bot === true) {
+        return true;
+      }
+      
+      if (message.fromId && message.fromId.className === 'PeerUser') {
         try {
-          repliedToMessage = await message.getReplyMessage();
+          const sender = await client.getEntity(message.fromId.userId);
+          return sender && sender.bot === true;
         } catch (e) {
-          // If we can't get it, try using replyToMsgId
-          if (message.replyToMsgId) {
-            try {
-              const chat = await message.getChat();
-              const messages = await client.getMessages(chat, { ids: [message.replyToMsgId] });
-              if (messages && messages.length > 0) {
-                repliedToMessage = messages[0];
-              }
-            } catch (e2) {
-              console.log(`[AUTO_REPLY] Could not fetch replied-to message for account ${accountId}: ${e2.message}`);
-              return false;
-            }
-          }
-        }
-      } else if (message.replyToMsgId) {
-        try {
-          const chat = await message.getChat();
-          const messages = await client.getMessages(chat, { ids: [message.replyToMsgId] });
-          if (messages && messages.length > 0) {
-            repliedToMessage = messages[0];
-          }
-        } catch (e) {
-          console.log(`[AUTO_REPLY] Could not fetch replied-to message for account ${accountId}: ${e.message}`);
+          // If we can't get the entity, assume it's not a bot
           return false;
         }
       }
-
-      if (!repliedToMessage) {
-        return false;
-      }
-
-      // Get the account's user ID to check if the replied-to message is from the account
-      const me = await client.getMe();
       
-      // Check if the replied-to message is from the account
-      const isFromAccount = this.isMessageFromSelf(repliedToMessage, me.id);
-      if (isFromAccount) {
-        console.log(`[AUTO_REPLY] Message is a reply to account's message (message ID: ${repliedToMessage.id})`);
-      }
-      return isFromAccount;
-    } catch (error) {
-      console.log(`[AUTO_REPLY] Error checking if message is reply to account: ${error.message}`);
-      // If we can't determine, assume it's not a reply to account
       return false;
+    } catch (error) {
+      return false; // Assume not a bot on error
     }
   }
 
   /**
-   * Check if message mentions the account
+   * Check if message mentions the account (tags/pings)
    */
-  async isAccountMentioned(message, meId, meUsername = null) {
-    // Check message entities for mentions
+  async isAccountMentioned(message, meId, meUsername) {
+    // Method 1: Check message entities for mentions (most reliable)
     if (message.entities && Array.isArray(message.entities)) {
       for (const entity of message.entities) {
-        // Check for mention entities
-        if (entity.className === 'MessageEntityMentionName' || 
-            entity.className === 'MessageEntityMention' ||
-            (entity.userId !== undefined && entity.userId !== null)) {
-          
-          let mentionedUserId = null;
-          if (entity.userId !== undefined && entity.userId !== null) {
-            mentionedUserId = entity.userId;
+        // Check for MessageEntityMentionName (direct user mention)
+        if (entity.className === 'MessageEntityMentionName' && entity.userId) {
+          const mentionedId = typeof entity.userId === 'bigint' ? Number(entity.userId) : entity.userId;
+          const meIdNum = typeof meId === 'bigint' ? Number(meId) : meId;
+          if (mentionedId === meIdNum) {
+            return true;
           }
-          
-          if (mentionedUserId !== null) {
-            const mentionedIdNum = typeof mentionedUserId === 'bigint' ? Number(mentionedUserId) : mentionedUserId;
-            const meIdNum = typeof meId === 'bigint' ? Number(meId) : meId;
-            if (mentionedIdNum === meIdNum) {
-              return true;
-            }
+        }
+        
+        // Check for MessageEntityMention (@username mentions)
+        if (entity.className === 'MessageEntityMention' && message.text && meUsername) {
+          const mentionText = message.text.substring(entity.offset, entity.offset + entity.length);
+          if (mentionText.toLowerCase() === `@${meUsername.toLowerCase()}`) {
+            return true;
           }
         }
       }
     }
 
-    // Also check if message text contains @username mention
+    // Method 2: Check if message text contains @username mention (fallback)
     if (message.text && meUsername) {
       const mentionPattern = new RegExp(`@${meUsername}\\b`, 'i');
       if (mentionPattern.test(message.text)) {
@@ -237,146 +230,129 @@ class AutoReplyHandler {
   }
 
   /**
-   * Check if message sender is a bot
+   * Check if message is a reply to the account's message
    */
-  async isSenderBot(message, client) {
+  async isReplyToAccount(message, client, accountId) {
     try {
-      // Try to get the sender entity
-      if (message.sender) {
-        return message.sender.bot === true;
-      }
-      
-      // Try to get sender from fromId
-      if (message.fromId) {
-        let senderId = null;
-        if (message.fromId.className === 'PeerUser') {
-          senderId = message.fromId.userId;
-        } else if (message.fromId && typeof message.fromId === 'object' && message.fromId.userId) {
-          senderId = message.fromId.userId;
-        }
-        
-        if (senderId !== null && senderId !== undefined) {
-          try {
-            const senderIdNum = typeof senderId === 'bigint' ? Number(senderId) : senderId;
-            const sender = await client.getEntity(senderIdNum);
-            if (sender && sender.bot === true) {
-              return true;
-            }
-          } catch (e) {
-            // If we can't get the entity, assume it's not a bot
-            return false;
-          }
-        }
-      }
-      
-      // Check senderId directly
-      if (message.senderId) {
-        let senderId = null;
-        if (message.senderId.className === 'PeerUser') {
-          senderId = message.senderId.userId;
-        } else if (message.senderId && typeof message.senderId === 'object' && message.senderId.userId) {
-          senderId = message.senderId.userId;
-        }
-        
-        if (senderId !== null && senderId !== undefined) {
-          try {
-            const senderIdNum = typeof senderId === 'bigint' ? Number(senderId) : senderId;
-            const sender = await client.getEntity(senderIdNum);
-            if (sender && sender.bot === true) {
-              return true;
-            }
-          } catch (e) {
-            // If we can't get the entity, assume it's not a bot
-            return false;
-          }
-        }
-      }
-      
-      return false;
-    } catch (error) {
-      // If we can't determine, assume it's not a bot (to avoid blocking legitimate users)
-      return false;
-    }
-  }
-
-  /**
-   * Check if message is from ourselves
-   */
-  isMessageFromSelf(message, meId) {
-    // Check senderId first (alternative way to identify sender)
-    if (message.senderId) {
-      let senderId = null;
-      if (message.senderId.className === 'PeerUser') {
-        senderId = message.senderId.userId;
-      } else if (message.senderId && typeof message.senderId === 'object' && message.senderId.userId) {
-        senderId = message.senderId.userId;
-      }
-      
-      if (senderId !== null && senderId !== undefined) {
-        const senderIdNum = typeof senderId === 'bigint' ? Number(senderId) : senderId;
-        const meIdNum = typeof meId === 'bigint' ? Number(meId) : meId;
-        if (senderIdNum === meIdNum) return true;
-      }
-    }
-    
-    // Check fromId
-    if (!message.fromId) return false;
-    
-    // Try using equals method if available
-    if (typeof message.fromId.equals === 'function') {
-      try {
-        return message.fromId.equals(meId);
-      } catch (e) {
-        // Fall through to other methods
-      }
-    }
-    
-    // Extract userId from PeerUser object
-    let senderId = null;
-    if (message.fromId.className === 'PeerUser') {
-      senderId = message.fromId.userId;
-    } else if (message.fromId && typeof message.fromId === 'object' && message.fromId.userId) {
-      senderId = message.fromId.userId;
-    }
-    
-    // Compare IDs (handle BigInt and number types)
-    if (senderId !== null && senderId !== undefined) {
-      const senderIdNum = typeof senderId === 'bigint' ? Number(senderId) : senderId;
-      const meIdNum = typeof meId === 'bigint' ? Number(meId) : meId;
-      return senderIdNum === meIdNum;
-    }
-    
-    return false;
-  }
-
-  /**
-   * Handle incoming message and send auto-reply if needed
-   */
-  async handleIncomingMessage(event, accountId, client) {
-    try {
-      const message = event.message;
-      if (!message) {
-        console.log(`[AUTO_REPLY] No message in event for account ${accountId}`);
-        return;
-      }
-
-      // Skip outgoing messages (messages sent by the bot itself)
-      if (message.out === true) {
-        return;
-      }
-
-      console.log(`[AUTO_REPLY] Received message event for account ${accountId}, message ID: ${message.id}`);
-
-      // Skip if message is from ourselves (additional check)
       const me = await client.getMe();
+      const meId = me.id;
+
+      // Check if message has a reply (multiple ways to check)
+      const hasReply = message.replyTo || 
+                      message.replyToMsgId || 
+                      (message.replyTo && message.replyTo.replyToMsgId);
+      
+      if (!hasReply) {
+        return false;
+      }
+
+      // Try to get the replied-to message
+      let repliedToMessage = null;
+      let replyToMsgId = null;
+
+      // Extract reply message ID
+      if (message.replyTo && message.replyTo.replyToMsgId) {
+        replyToMsgId = message.replyTo.replyToMsgId;
+      } else if (message.replyToMsgId) {
+        replyToMsgId = message.replyToMsgId;
+      } else if (message.replyTo) {
+        // Try other possible properties
+        replyToMsgId = message.replyTo.replyToTopId || message.replyTo.replyToMsgId;
+      }
+
+      // Method 1: Try getReplyMessage() (most reliable)
+      try {
+        repliedToMessage = await message.getReplyMessage();
+      } catch (e) {
+        // Method 2: Fetch manually using message ID
+        if (replyToMsgId) {
+          try {
+            const chat = await message.getChat();
+            const messages = await client.getMessages(chat, { ids: [replyToMsgId] });
+            if (messages && messages.length > 0) {
+              repliedToMessage = messages[0];
+            }
+          } catch (e2) {
+            return false;
+          }
+        }
+      }
+
+      if (!repliedToMessage) {
+        return false;
+      }
+
+      // Check if the replied-to message is from the account
+      // Try multiple methods to check if message is from account
+      let isReplyToOurMessage = false;
+      
+      // Method 1: Check if message.out is true (message sent by account)
+      if (repliedToMessage.out === true) {
+        isReplyToOurMessage = true;
+      } else {
+        // Method 2: Check using isMessageFromSelf
+        isReplyToOurMessage = this.isMessageFromSelf(repliedToMessage, meId);
+      }
+      
+      // Method 3: Also check senderId directly if available
+      if (!isReplyToOurMessage && repliedToMessage.senderId) {
+        let senderId = null;
+        if (repliedToMessage.senderId.className === 'PeerUser') {
+          senderId = repliedToMessage.senderId.userId;
+        }
+        if (senderId !== null && senderId !== undefined) {
+          const senderIdNum = typeof senderId === 'bigint' ? Number(senderId) : senderId;
+          const meIdNum = typeof meId === 'bigint' ? Number(meId) : meId;
+          if (senderIdNum === meIdNum) {
+            isReplyToOurMessage = true;
+          }
+        }
+      }
+      
+      return isReplyToOurMessage;
+    } catch (error) {
+      console.log(`[AUTO_REPLY] Error checking reply: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Process incoming message and send auto-reply if needed
+   */
+  async processMessage(message, accountId, client) {
+    try {
+      // Get chat information
+      const chat = await message.getChat();
+      if (!chat) return;
+
+      const chatId = this.extractChatId(chat, message);
+      if (!chatId) {
+        console.log(`[AUTO_REPLY] Could not extract chat ID for message ${message.id}`);
+        return;
+      }
+
+      const messageId = String(message.id);
+      
+      // Check if this specific message has already been processed (prevents duplicate processing of same message)
+      // NOTE: This is per-message, not per-user. Same user can send multiple messages and each will trigger auto-reply
+      if (this.hasProcessedMessage(accountId, chatId, messageId)) {
+        return; // This specific message already processed
+      }
+
+      // Mark this specific message as processed (prevents duplicate event processing)
+      // NOTE: Each new message from same user will have different messageId, so will trigger auto-reply
+      this.markMessageProcessed(accountId, chatId, messageId);
+
+      // Get account info
+      const me = await client.getMe();
+      
+      // Skip if message is from ourselves
       if (this.isMessageFromSelf(message, me.id)) {
         return;
       }
 
       // Skip if message is from a bot
-      const isBot = await this.isSenderBot(message, client);
-      if (isBot) {
-        console.log(`[AUTO_REPLY] Message from bot, skipping auto-reply for account ${accountId}`);
+      if (await this.isSenderBot(message, client)) {
         return;
       }
 
@@ -385,129 +361,193 @@ class AutoReplyHandler {
         return;
       }
 
-      // Get chat information
-      const chat = await message.getChat();
-      if (!chat) return;
-
-      // Get chat ID for tracking (handle BigInt and number types)
-      let chatId = null;
-      if (chat.id !== null && chat.id !== undefined) {
-        if (typeof chat.id === 'bigint') {
-          chatId = chat.id.toString();
-        } else {
-          chatId = String(chat.id);
-        }
-      }
-      if (!chatId) {
-        console.log(`[AUTO_REPLY] Could not extract chat ID for account ${accountId}`);
-        return;
-      }
-
-      // Get message ID for tracking
-      const messageId = message.id ? String(message.id) : null;
-      if (!messageId) {
-        console.log(`[AUTO_REPLY] Could not extract message ID for account ${accountId}`);
-        return;
-      }
-
-      // Check if this message is already being processed (prevent race conditions)
-      if (this.isProcessingMessage(accountId, chatId, messageId)) {
-        console.log(`[AUTO_REPLY] Message ${messageId} already being processed, skipping for account ${accountId}`);
-        return;
-      }
-
-      // Determine if it's a DM or group
-      // Check chat type using className
-      const chatType = chat.className || '';
-      const isDM = chatType === 'User';
-      // Groups are Chat, Channel, or have megagroup/gigagroup flags
-      const isGroup = chatType === 'Chat' || chatType === 'Channel' || chat.megagroup || chat.gigagroup;
-
-      console.log(`[AUTO_REPLY] Chat type: ${chatType}, isDM: ${isDM}, isGroup: ${isGroup}, chatId: ${chatId}`);
-
       // Get auto-reply settings
       const settings = await configService.getAccountSettings(accountId);
-      if (!settings) {
-        console.log(`[AUTO_REPLY] No settings found for account ${accountId}`);
-        return;
-      }
+      if (!settings) return;
 
-      console.log(`[AUTO_REPLY] Settings for account ${accountId}: DM=${settings.autoReplyDmEnabled}, Groups=${settings.autoReplyGroupsEnabled}, DMMessage=${settings.autoReplyDmMessage ? 'set' : 'not set'}`);
+      // Determine chat type
+      const chatType = chat.className || '';
+      const isDM = chatType === 'User';
+      const isGroup = chatType === 'Chat' || chat.megagroup || chat.gigagroup;
 
       // Handle DM auto-reply
       if (isDM && settings.autoReplyDmEnabled && settings.autoReplyDmMessage) {
-        console.log(`[AUTO_REPLY] Processing DM auto-reply for account ${accountId}`);
-        // Check if we've already replied to this chat recently (30-minute cooldown)
-        if (this.hasRepliedToChatRecently(accountId, chatId)) {
-          console.log(`[AUTO_REPLY] Already replied to DM from ${chat.firstName || 'Unknown'} recently (30min cooldown), skipping for account ${accountId}`);
+        // TODO: Re-enable 30-minute cooldown per chat for production
+        // Check cooldown (DISABLED FOR TESTING - can be re-enabled later)
+        // if (this.hasRepliedToChatRecently(accountId, chatId)) {
+        //   return;
+        // }
+
+        // Check client connection
+        if (!client.connected) {
+          console.error(`[AUTO_REPLY] Client not connected for account ${accountId}`);
           return;
         }
 
-        // Mark message as being processed
-        this.markMessageProcessing(accountId, chatId, messageId);
-
-        console.log(`[AUTO_REPLY] Received DM from ${chat.firstName || 'Unknown'}, sending auto-reply for account ${accountId}`);
+        // Send auto-reply
         try {
           await client.sendMessage(chat, {
             message: settings.autoReplyDmMessage,
           });
-          // Mark this chat as replied to (30-minute cooldown)
-          this.markChatAsReplied(accountId, chatId);
-          console.log(`[AUTO_REPLY] ✅ DM auto-reply sent successfully for account ${accountId}`);
+          // TODO: Re-enable chat marking for 30-minute cooldown (DISABLED FOR TESTING)
+          // this.markChatAsReplied(accountId, chatId);
+          console.log(`[AUTO_REPLY] ✅ DM auto-reply sent for account ${accountId}`);
         } catch (sendError) {
+          console.error(`[AUTO_REPLY] Error sending DM auto-reply:`, sendError.message);
           logError(`[AUTO_REPLY] Error sending DM auto-reply:`, sendError);
-        } finally {
-          // Clear processing flag
-          this.clearMessageProcessing(accountId, chatId, messageId);
         }
         return;
       }
 
-      // Handle group auto-reply (only if account is mentioned OR message is reply to account's message)
+      // Handle group auto-reply (only if mentioned or replied to account's message)
+      // NOTE: No cooldown for groups - responds to EVERY mention/reply, even from same user
+      // Each message has unique ID, so same user can mention/reply multiple times and get response each time
       if (isGroup && settings.autoReplyGroupsEnabled && settings.autoReplyGroupsMessage) {
-        // Check if account is mentioned in the message
-        const isMentioned = await this.isAccountMentioned(message, me.id, me.username);
+        // Quick check: does message have reply or potential mention?
+        // Check multiple ways to detect replies
+        const hasReply = message.replyTo || 
+                        message.replyToMsgId || 
+                        (message.replyTo && message.replyTo.replyToMsgId) ||
+                        (message.replyMarkup && message.replyMarkup.replyToMsgId);
+        const hasEntities = message.entities && Array.isArray(message.entities) && message.entities.length > 0;
+        const mightHaveMention = hasEntities || (me.username && message.text && message.text.includes(`@${me.username}`));
+
+        // Early exit if no reply and no potential mention
+        if (!hasReply && !mightHaveMention) {
+          return; // Skip group messages without reply or mention
+        }
+
+        // Check if account is mentioned (tagged/pinged)
+        const isMentioned = mightHaveMention ? await this.isAccountMentioned(message, me.id, me.username) : false;
         
         // Check if message is a reply to account's message
-        const isReplyToAccount = await this.isReplyToAccount(message, client, accountId);
-        
-        // Only reply if account is mentioned OR message is a reply to account's message
+        const isReplyToAccount = hasReply ? await this.isReplyToAccount(message, client, accountId) : false;
+
+        // Only proceed if mentioned OR replied to account's message
         if (!isMentioned && !isReplyToAccount) {
-          return; // Don't reply if not mentioned and not a reply to account
+          return; // Skip if not mentioned and not a reply to account
         }
+
+        // NO COOLDOWN FOR GROUPS - respond to every mention/reply
+        // Same user can mention/reply multiple times - each message gets a response
+        // No per-user or per-chat tracking for groups - unlimited responses
         
-        // No cooldown for groups - reply to every mention/reply
-        // Mark message as being processed
-        this.markMessageProcessing(accountId, chatId, messageId);
-        
-        const triggerType = isMentioned ? 'mention' : 'reply to account message';
-        console.log(`[AUTO_REPLY] Received ${triggerType} in group "${chat.title || 'Unknown'}", sending auto-reply for account ${accountId}`);
+        // Check client connection
+        if (!client.connected) {
+          console.error(`[AUTO_REPLY] Client not connected for account ${accountId}`);
+          return;
+        }
+
+        // Send auto-reply as a reply to the triggering message (not as standalone message)
         try {
+          // Reply to the message that triggered the auto-reply
+          // In gramjs, we need to pass the message object or use replyTo parameter
           await client.sendMessage(chat, {
             message: settings.autoReplyGroupsMessage,
+            replyTo: message, // Reply to the triggering message (pass message object)
           });
-          console.log(`[AUTO_REPLY] ✅ Group auto-reply sent successfully for account ${accountId} (triggered by ${triggerType})`);
+          
+          // Log what triggered the auto-reply
+          const triggerType = isMentioned && isReplyToAccount ? 'mention + reply' : 
+                             isMentioned ? 'mention (tagged/pinged)' : 
+                             'reply to account message';
+          console.log(`[AUTO_REPLY] ✅ Group auto-reply sent for account ${accountId} (triggered by: ${triggerType}, replied to message ${message.id})`);
         } catch (sendError) {
+          console.error(`[AUTO_REPLY] Error sending group auto-reply:`, sendError.message);
           logError(`[AUTO_REPLY] Error sending group auto-reply:`, sendError);
-        } finally {
-          // Clear processing flag
-          this.clearMessageProcessing(accountId, chatId, messageId);
         }
         return;
       }
     } catch (error) {
-      // Don't log errors for messages we can't process (e.g., deleted chats, etc.)
+      // Silently ignore common recoverable errors
       if (error.message && (
         error.message.includes('CHAT_ID_INVALID') ||
         error.message.includes('USER_DEACTIVATED') ||
         error.message.includes('PEER_ID_INVALID')
       )) {
-        return; // Silently ignore these common errors
+        return;
       }
-      logError(`[AUTO_REPLY] Error processing message for account ${accountId}:`, error);
+      logError(`[AUTO_REPLY] Error processing message:`, error);
+    }
+  }
+
+  /**
+   * Setup auto-reply handler for a client
+   */
+  async setupAutoReply(client, accountId) {
+    if (!client) return;
+
+    const clientId = client._selfId || accountId || 'unknown';
+    const clientKey = `${clientId}_${accountId}`;
+
+    // Check if handler already registered for this client/account
+    if (this.registeredHandlers.has(clientKey)) {
+      // Only log once per account to reduce log noise
+      if (!this.loggedAlreadyRegistered.has(accountId)) {
+        console.log(`[AUTO_REPLY] Handler already registered for account ${accountId}, skipping duplicate registration`);
+        this.loggedAlreadyRegistered.add(accountId);
+      }
+      return;
+    }
+    
+    // Clear the logged flag when registering a new handler
+    this.loggedAlreadyRegistered.delete(accountId);
+
+    // Remove existing handlers for this client (safety check)
+    this.removeAutoReply(client);
+
+    // Create event handler
+    const handler = async (event) => {
+      const message = event.message;
+      if (!message) return;
+
+      // Skip outgoing messages
+      if (message.out === true) return;
+
+      // Process message
+      await this.processMessage(message, accountId, client);
+    };
+
+    // Register event handler
+    try {
+      // Use NewMessage event - it only fires for incoming messages by default
+      client.addEventHandler(handler, new NewMessage({}));
+      this.registeredHandlers.set(clientKey, handler);
+      console.log(`[AUTO_REPLY] ✅ Handler registered for account ${accountId} (clientKey: ${clientKey})`);
+    } catch (error) {
+      console.error(`[AUTO_REPLY] ❌ Failed to register handler for account ${accountId}:`, error);
+      logError(`[AUTO_REPLY] Failed to register handler:`, error);
+    }
+  }
+
+  /**
+   * Remove auto-reply handler from a client
+   */
+  removeAutoReply(client) {
+    if (!client) return;
+
+    try {
+      const clientId = client._selfId || 'unknown';
+      const handlers = client.listEventHandlers(NewMessage);
+      
+      for (const handler of handlers) {
+        try {
+          client.removeEventHandler(handler);
+        } catch (e) {
+          // Ignore individual handler removal errors
+        }
+      }
+
+      // Clean up registered handlers map
+      for (const [key, _] of this.registeredHandlers.entries()) {
+        if (key.includes(clientId.toString())) {
+          this.registeredHandlers.delete(key);
+        }
+      }
+    } catch (error) {
+      // Ignore errors when removing handlers
     }
   }
 }
 
 export default new AutoReplyHandler();
-

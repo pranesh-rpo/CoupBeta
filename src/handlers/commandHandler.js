@@ -5,10 +5,12 @@ import messageService from '../services/messageService.js';
 import userService from '../services/userService.js';
 import groupService from '../services/groupService.js';
 import configService from '../services/configService.js';
+import groupBlacklistService from '../services/groupBlacklistService.js';
 import adminNotifier from '../services/adminNotifier.js';
 import premiumService from '../services/premiumService.js';
+import paymentVerificationService from '../services/paymentVerificationService.js';
 import otpHandler, { createOTPKeypad } from './otpHandler.js';
-import { createMainMenu, createBackButton, createStopButton, createAccountSwitchKeyboard, createGroupsMenu, createConfigMenu, createQuietHoursKeyboard, createABModeKeyboard, createScheduleKeyboard, createABMessagesKeyboard, generateStatusText, createLoginOptionsKeyboard } from './keyboardHandler.js';
+import { createMainMenu, createBackButton, createStopButton, createAccountSwitchKeyboard, createGroupsMenu, createConfigMenu, createQuietHoursKeyboard, createScheduleKeyboard, createMessagePoolKeyboard, createMessagePoolListKeyboard, generateStatusText, createLoginOptionsKeyboard, createMessagesMenu } from './keyboardHandler.js';
 import { config } from '../config.js';
 import logger, { logError } from '../utils/logger.js';
 import { safeEditMessage, safeAnswerCallback } from '../utils/safeEdit.js';
@@ -427,7 +429,7 @@ export async function handleLinkButton(bot, callbackQuery) {
     bot,
     chatId,
     callbackQuery.message.message_id,
-    `📱 <b>Link Account</b>\n\nChoose your preferred login method:\n\n🌐 <b>Web Login:</b> Scan QR code with Telegram app\n📱 <b>Share Phone:</b> Share your phone number via button\n⌨️ <b>Type Phone:</b> Enter phone number manually\n\n`,
+    `📱 <b>Link Account</b>\n\nChoose your preferred login method:\n\n📱 <b>Share Phone:</b> Share your phone number via button\n⌨️ <b>Type Phone:</b> Enter phone number manually\n\n`,
     { parse_mode: 'HTML', ...createLoginOptionsKeyboard() }
   );
   
@@ -435,72 +437,6 @@ export async function handleLinkButton(bot, callbackQuery) {
   return false; // Don't set pending state yet - user needs to choose option
 }
 
-export async function handleLoginWeb(bot, callbackQuery) {
-  const userId = callbackQuery.from.id;
-  const chatId = callbackQuery.message.chat.id;
-  const username = callbackQuery.from.username || 'Unknown';
-
-  logger.logButtonClick(userId, username, 'Web Login', chatId);
-  logger.logChange('LINK', userId, 'Initiating web login (QR code)');
-
-  await safeAnswerCallback(bot, callbackQuery.id);
-
-  try {
-    // Show connecting status
-    await safeEditMessage(
-      bot,
-      chatId,
-      callbackQuery.message.message_id,
-      '🔌 Connecting to Telegram...',
-      { parse_mode: 'HTML' }
-    );
-
-    // Initiate web login (pass chatId for 2FA notifications)
-    const result = await accountLinker.initiateWebLogin(userId, chatId);
-    
-    if (result.success) {
-      // Send QR code image (result.qrCode is a Buffer)
-      await bot.sendPhoto(
-        chatId,
-        result.qrCode,
-        {
-          caption: '📱 <b>Web Login</b>\n\n1. Open Telegram on your phone\n2. Go to Settings → Devices → Link Desktop Device\n3. Scan this QR code\n\n⏳ Waiting for you to scan and authorize...',
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔄 Refresh QR Code', callback_data: 'btn_login_web' }],
-              [{ text: '◀️ Cancel', callback_data: 'btn_login_cancel' }],
-            ],
-          },
-        }
-      );
-      
-      // Delete the previous message
-      try {
-        await bot.deleteMessage(chatId, callbackQuery.message.message_id);
-      } catch (e) {
-        // Ignore if message already deleted
-      }
-    } else {
-      await safeEditMessage(
-        bot,
-        chatId,
-        callbackQuery.message.message_id,
-        `❌ <b>Web Login Failed</b>\n\n<b>Error:</b> ${result.error}\n\nPlease try another login method.`,
-        { parse_mode: 'HTML', ...createLoginOptionsKeyboard() }
-      );
-    }
-  } catch (error) {
-    logger.logError('LINK', userId, error, 'Web login error');
-    await safeEditMessage(
-      bot,
-      chatId,
-      callbackQuery.message.message_id,
-      `❌ <b>Web Login Error</b>\n\n<b>Error:</b> ${error.message}\n\nPlease try another login method.`,
-      { parse_mode: 'HTML', ...createLoginOptionsKeyboard() }
-    );
-  }
-}
 
 export async function handleLoginSharePhone(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
@@ -610,7 +546,7 @@ export async function handleLoginCancel(bot, callbackQuery) {
   // Show login options again
   await bot.sendMessage(
     chatId,
-    `📱 <b>Link Account</b>\n\nChoose your preferred login method:\n\n🌐 <b>Web Login:</b> Scan QR code with Telegram app\n📱 <b>Share Phone:</b> Share your phone number via button\n⌨️ <b>Type Phone:</b> Enter phone number manually\n\n`,
+    `📱 <b>Link Account</b>\n\nChoose your preferred login method:\n\n📱 <b>Share Phone:</b> Share your phone number via button\n⌨️ <b>Type Phone:</b> Enter phone number manually\n\n`,
     { parse_mode: 'HTML', ...createLoginOptionsKeyboard() }
   );
 
@@ -995,31 +931,10 @@ export async function handleSetStartMessage(bot, msg) {
   const result = await messageService.saveMessage(accountId, text, 'A', messageEntities);
   
   if (result.success) {
-    // Check if forward mode is enabled - if so, save message to Saved Messages
-    const settings = await configService.getAccountSettings(accountId);
-    if (settings?.forwardMode) {
-      try {
-        const client = await accountLinker.getClientAndConnect(userId, accountId);
-        if (client) {
-          // Get Saved Messages entity (it's the "me" user)
-          const me = await client.getMe();
-          const savedMessagesEntity = await client.getEntity(me);
-          
-          // Send message to Saved Messages
-          const sentMessage = await client.sendMessage(savedMessagesEntity, {
-            message: text,
-            parseMode: 'html',
-          });
-          
-          // Store the message ID
-          await configService.setForwardMessageId(accountId, sentMessage.id);
-          console.log(`[MESSAGE_SET] Message saved to Saved Messages with ID: ${sentMessage.id} (forward mode enabled)`);
-        }
-      } catch (error) {
-        console.error(`[MESSAGE_SET] Error saving message to Saved Messages: ${error.message}`);
-        // Continue anyway - message is still saved in database
-      }
-    }
+    // Note: Forward mode will use the last message from Saved Messages
+    // User should manually forward a message (with premium emojis) to Saved Messages first
+    // The bot will then forward that message to groups
+    // No need to send message to Saved Messages here - just save to database
     
     // Notify admins
     adminNotifier.notifyUserAction('MESSAGE_SET', userId, {
@@ -1029,9 +944,10 @@ export async function handleSetStartMessage(bot, msg) {
       details: `Broadcast message set successfully`,
     }).catch(() => {}); // Silently fail to avoid blocking
     
+    const settings = await configService.getAccountSettings(accountId);
     await bot.sendMessage(
       chatId,
-      `✅ <b>Broadcast Message Set Successfully!</b>${settings?.forwardMode ? '\n\n📤 Message saved to Saved Messages (Forward Mode enabled)' : ''}`,
+      `✅ <b>Broadcast Message Set Successfully!</b>${settings?.forwardMode ? '\n\n📤 Forward Mode enabled - will forward LAST message from Saved Messages\n\n💡 Tip: Forward a message (with premium emojis) to your Saved Messages first!' : ''}`,
       { parse_mode: 'HTML', ...await createMainMenu(userId) }
     );
     console.log(`[handleSetStartMessage] User ${userId} successfully set message, returning true`);
@@ -1249,6 +1165,69 @@ export async function handlePasswordInput(bot, msg, password) {
       logger.logError('2FA', userId, sendError, 'Failed to send error message to user');
     }
   }
+}
+
+/**
+ * Handle Messages menu (combined Set Message and Message Pool)
+ */
+export async function handleMessagesMenu(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Messages Menu', chatId);
+
+  // Check verification requirement
+  if (config.updatesChannel) {
+    const isVerified = await userService.isUserVerified(userId);
+    if (!isVerified) {
+      const channelUsername = config.updatesChannel.replace('@', '');
+      await safeAnswerCallback(bot, callbackQuery.id, {
+        text: 'Please verify by joining our updates channel first!',
+        show_alert: true,
+      });
+      await showVerificationRequired(bot, chatId, channelUsername);
+      return;
+    }
+  }
+
+  if (!accountLinker.isLinked(userId)) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'Please link an account first!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const currentMessage = await messageService.getActiveMessage(accountId);
+  const pool = await messageService.getMessagePool(accountId);
+  const settings = await configService.getAccountSettings(accountId);
+  const usePool = settings?.useMessagePool || false;
+
+  let menuMessage = `💬 <b>Messages</b>\n\n`;
+  menuMessage += `Manage your broadcast messages and message pool.\n\n`;
+  menuMessage += `✍️ <b>Current Message:</b> ${currentMessage ? `"${escapeHtml(currentMessage.substring(0, 50))}${currentMessage.length > 50 ? '...' : ''}"` : 'Not set'}\n`;
+  menuMessage += `🎲 <b>Message Pool:</b> ${pool.length} messages ${usePool ? '(Enabled)' : '(Disabled)'}\n\n`;
+  menuMessage += `Select an option below:`;
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    menuMessage,
+    { parse_mode: 'HTML', ...createMessagesMenu() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
 }
 
 export async function handleSetStartMessageButton(bot, callbackQuery) {
@@ -1982,14 +1961,14 @@ export async function handleSwitchAccountButton(bot, callbackQuery) {
   await handleAccountButton(bot, callbackQuery);
 }
 
-// ==================== A/B MESSAGE HANDLERS ====================
+// ==================== MESSAGE POOL HANDLERS ====================
 
-export async function handleABMessagesButton(bot, callbackQuery) {
+export async function handleMessagePoolButton(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
   const chatId = callbackQuery.message.chat.id;
   const username = callbackQuery.from.username || 'Unknown';
 
-  logger.logButtonClick(userId, username, 'A/B Messages', chatId);
+  logger.logButtonClick(userId, username, 'Message Pool', chatId);
 
   // Check verification requirement
   if (config.updatesChannel) {
@@ -2022,35 +2001,36 @@ export async function handleABMessagesButton(bot, callbackQuery) {
     return;
   }
 
-  const { messageA, messageB } = await messageService.getABMessages(accountId);
+  const pool = await messageService.getMessagePool(accountId);
   const settings = await configService.getAccountSettings(accountId);
-  const abMode = settings?.abMode || false;
-  const abModeType = settings?.abModeType || 'single';
+  const usePool = settings?.useMessagePool || false;
+  const poolMode = settings?.messagePoolMode || 'random';
 
-  const abMessage = `🔄 <b>A/B Testing Messages</b>\n\n` +
-    `📝 <b>Message A:</b> ${messageA ? `"${escapeHtml(messageA.substring(0, 50))}${messageA.length > 50 ? '...' : ''}"` : '❌ Not set'}\n` +
-    `📝 <b>Message B:</b> ${messageB ? `"${escapeHtml(messageB.substring(0, 50))}${messageB.length > 50 ? '...' : ''}"` : '❌ Not set'}\n\n` +
-    `⚙️ <b>A/B Mode:</b> ${abMode ? `✅ ${abModeType.charAt(0).toUpperCase() + abModeType.slice(1)}` : '❌ Disabled'}\n\n` +
-    `${!messageA || !messageB ? '⚠️ Set both messages to enable A/B testing.\n\n' : ''}` +
-    `Use buttons below to set or view messages.`;
+  const poolMessage = `🎲 <b>Message Pool</b>\n\n` +
+    `📊 <b>Messages in Pool:</b> ${pool.length}\n` +
+    `⚙️ <b>Mode:</b> ${usePool ? `✅ ${poolMode === 'random' ? '🎲 Random' : poolMode === 'rotate' ? '🔄 Rotate' : poolMode === 'sequential' ? '➡️ Sequential' : '🎲 Random'}` : '❌ Disabled'}\n\n` +
+    `${pool.length === 0 ? '⚠️ Add messages to the pool to start using it.\n\n' : ''}` +
+    `The message pool allows you to add multiple messages. Each broadcast will ${poolMode === 'random' ? 'randomly select' : poolMode === 'rotate' ? 'rotate through in order' : poolMode === 'sequential' ? 'send sequentially (one per group)' : 'randomly select'} one from the pool.\n\n` +
+    `${usePool ? '✅ Pool is <b>enabled</b> and will be used for broadcasts.\n\n' : '⚠️ Pool is <b>disabled</b>. Enable it to use pool messages.\n\n'}` +
+    `Use buttons below to manage your message pool.`;
 
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
-    abMessage,
-    { parse_mode: 'HTML', ...createABMessagesKeyboard(!!messageA, !!messageB) }
+    poolMessage,
+    { parse_mode: 'HTML', ...createMessagePoolKeyboard(pool.length, poolMode, usePool) }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
 }
 
-export async function handleABSetMessage(bot, callbackQuery, variant) {
+export async function handlePoolAddMessage(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
   const chatId = callbackQuery.message.chat.id;
   const username = callbackQuery.from.username || 'Unknown';
 
-  logger.logButtonClick(userId, username, `Set Message ${variant}`, chatId);
+  logger.logButtonClick(userId, username, 'Add to Pool', chatId);
 
   if (!accountLinker.isLinked(userId)) {
     await safeAnswerCallback(bot, callbackQuery.id, {
@@ -2069,10 +2049,7 @@ export async function handleABSetMessage(bot, callbackQuery, variant) {
     return;
   }
 
-  const currentMessage = await messageService.getActiveMessage(accountId, variant);
-  const prompt = currentMessage
-    ? `📝 <b>Set Message ${variant}</b>\n\n<b>Current Message ${variant}:</b>\n<i>"${escapeHtml(currentMessage.length > 100 ? currentMessage.substring(0, 100) + '...' : currentMessage)}"</i>\n\nSend your new message to replace it:`
-    : `📝 <b>Set Message ${variant}</b>\n\nPlease send your Message ${variant}:`;
+  const prompt = `📝 <b>Add Message to Pool</b>\n\nSend your message to add it to the pool:`;
 
   await safeEditMessage(
     bot,
@@ -2082,19 +2059,19 @@ export async function handleABSetMessage(bot, callbackQuery, variant) {
     { parse_mode: 'HTML', ...createBackButton() }
   );
   
-  // Store pending state - need to export or use global
-  if (typeof global !== 'undefined' && !global.pendingABMessages) {
-    global.pendingABMessages = new Map();
+  // Store pending state
+  if (typeof global !== 'undefined' && !global.pendingPoolMessages) {
+    global.pendingPoolMessages = new Map();
   }
   if (typeof global !== 'undefined') {
-    global.pendingABMessages.set(userId, { accountId, variant });
+    global.pendingPoolMessages.set(userId, { accountId });
   }
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId, variant };
+  return { accountId };
 }
 
-export async function handleABMessageInput(bot, msg, accountId, variant) {
+export async function handlePoolMessageInput(bot, msg, accountId) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
@@ -2103,7 +2080,7 @@ export async function handleABMessageInput(bot, msg, accountId, variant) {
   if (!text) {
     await bot.sendMessage(
       chatId,
-      `📝 <b>Set Message ${variant}</b>\n\nPlease send your Message ${variant}:`,
+      `📝 <b>Add Message to Pool</b>\n\nPlease send your message:`,
       { parse_mode: 'HTML', ...createBackButton() }
     );
     return;
@@ -2119,56 +2096,50 @@ export async function handleABMessageInput(bot, msg, accountId, variant) {
       language: e.language,
       url: e.url,
       user: e.user,
-      custom_emoji_id: e.custom_emoji_id, // For premium emojis
+      custom_emoji_id: e.custom_emoji_id,
     }));
-    console.log(`[handleABMessageInput] Extracted ${messageEntities.length} entities from message ${variant} (including premium emojis)`);
   }
 
-  // Check if message contains HTML tags (from forwarded messages with formatting)
-  // Strip HTML tags to prevent them from showing in broadcasts
+  // Strip HTML tags if present
   if (text.includes('<') && text.includes('>')) {
-    console.log(`[handleABMessageInput] Detected HTML tags in message ${variant} from user ${userId}, stripping them...`);
     text = stripHtmlTags(text);
-    console.log(`[handleABMessageInput] HTML tags stripped, new length: ${text.length}`);
   }
 
-  // Validate message length (Telegram limit is 4096 characters)
+  // Validate message length
   if (text.length > 4096) {
     await bot.sendMessage(
       chatId,
-      `❌ Message ${variant} is too long. Telegram messages have a maximum length of 4096 characters.\n\nPlease shorten your message and try again.`,
+      `❌ Message is too long. Telegram messages have a maximum length of 4096 characters.\n\nPlease shorten your message and try again.`,
       createBackButton()
     );
-    console.log(`[handleABMessageInput] User ${userId} sent message ${variant} that's too long: ${text.length} characters`);
     return;
   }
 
-  logger.logChange('MESSAGE', userId, `Message ${variant} set: ${text.substring(0, 50)}...`);
-  const result = await messageService.saveMessage(accountId, text, variant, messageEntities);
+  logger.logChange('MESSAGE_POOL', userId, `Message added to pool: ${text.substring(0, 50)}...`);
+  const result = await messageService.addToMessagePool(accountId, text, messageEntities);
   
   if (result.success) {
-      await bot.sendMessage(
-        chatId,
-        `✅ <b>Message ${variant} Set Successfully!</b>`,
-        { parse_mode: 'HTML', ...await createMainMenu(userId) }
-      );
-  } else {
-    let errorMessage = `❌ <b>Failed to Save Message</b>\n\n<b>Error:</b> ${result.error}\n\n`;
-    
+    const pool = await messageService.getMessagePool(accountId);
     await bot.sendMessage(
       chatId,
-      errorMessage,
+      `✅ <b>Message Added to Pool!</b>\n\n📊 Total messages in pool: ${pool.length}`,
+      { parse_mode: 'HTML', ...await createMainMenu(userId) }
+    );
+  } else {
+    await bot.sendMessage(
+      chatId,
+      `❌ <b>Failed to Add Message</b>\n\n<b>Error:</b> ${result.error}`,
       { parse_mode: 'HTML', ...createBackButton() }
     );
   }
 }
 
-export async function handleABViewMessages(bot, callbackQuery) {
+export async function handlePoolViewMessages(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
   const chatId = callbackQuery.message.chat.id;
   const username = callbackQuery.from.username || 'Unknown';
 
-  logger.logButtonClick(userId, username, 'View A/B Messages', chatId);
+  logger.logButtonClick(userId, username, 'View Pool Messages', chatId);
 
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
@@ -2179,22 +2150,173 @@ export async function handleABViewMessages(bot, callbackQuery) {
     return;
   }
 
-  const { messageA, messageB } = await messageService.getABMessages(accountId);
+  const pool = await messageService.getMessagePool(accountId);
 
-  const viewMessage = `📋 <b>A/B Messages</b>\n\n` +
-    `📝 <b>Message A:</b>\n${messageA ? `<i>"${escapeHtml(messageA)}"</i>` : '<i>❌ Not set</i>'}\n\n` +
-    `📝 <b>Message B:</b>\n${messageB ? `<i>"${escapeHtml(messageB)}"</i>` : '<i>❌ Not set</i>'}\n\n` +
-    `Use buttons below to set or update messages.`;
+  if (pool.length === 0) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'Pool is empty! Add messages first.',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const viewMessage = `📋 <b>Message Pool (${pool.length} messages)</b>\n\n` +
+    pool.map((msg, idx) => 
+      `${idx + 1}. <i>"${escapeHtml(msg.text.length > 100 ? msg.text.substring(0, 100) + '...' : msg.text)}"</i>`
+    ).join('\n\n');
 
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
     viewMessage,
-    { parse_mode: 'HTML', ...createABMessagesKeyboard(!!messageA, !!messageB) }
+    { parse_mode: 'HTML', ...createMessagePoolListKeyboard(pool, 0) }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
+}
+
+export async function handlePoolDeleteMessage(bot, callbackQuery, messageId) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Delete from Pool', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const result = await messageService.deleteFromMessagePool(accountId, messageId);
+  
+  if (result.success) {
+    const pool = await messageService.getMessagePool(accountId);
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'Message deleted from pool!',
+      show_alert: true,
+    });
+    
+    // Refresh the view
+    if (pool.length === 0) {
+      await handleMessagePoolButton(bot, callbackQuery);
+    } else {
+      await handlePoolViewMessages(bot, callbackQuery);
+    }
+  } else {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: `Failed to delete: ${result.error}`,
+      show_alert: true,
+    });
+  }
+}
+
+export async function handlePoolModeChange(bot, callbackQuery, mode) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, `Pool Mode: ${mode}`, chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  await configService.updateMessagePoolMode(accountId, mode);
+  await configService.setMessagePoolEnabled(accountId, true);
+  
+  const modeNames = {
+    'random': 'Random',
+    'rotate': 'Rotate',
+    'sequential': 'Sequential'
+  };
+  
+  await safeAnswerCallback(bot, callbackQuery.id, {
+    text: `Mode changed to ${modeNames[mode] || mode}! Pool enabled.`,
+    show_alert: true,
+  });
+
+  // Refresh the pool menu
+  await handleMessagePoolButton(bot, callbackQuery);
+}
+
+export async function handlePoolToggle(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Toggle Pool', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const currentState = settings?.useMessagePool || false;
+  const pool = await messageService.getMessagePool(accountId);
+
+  if (!currentState && pool.length === 0) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'Add at least one message to the pool before enabling!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  await configService.setMessagePoolEnabled(accountId, !currentState);
+  await safeAnswerCallback(bot, callbackQuery.id, {
+    text: `Message pool ${!currentState ? 'enabled' : 'disabled'}!`,
+    show_alert: true,
+  });
+
+  // Refresh the pool menu
+  await handleMessagePoolButton(bot, callbackQuery);
+}
+
+export async function handlePoolClear(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Clear Pool', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const pool = await messageService.getMessagePool(accountId);
+  
+  // Delete all messages
+  for (const msg of pool) {
+    await messageService.deleteFromMessagePool(accountId, msg.id);
+  }
+
+  await safeAnswerCallback(bot, callbackQuery.id, {
+    text: `Pool cleared! Removed ${pool.length} messages.`,
+    show_alert: true,
+  });
+
+  // Refresh the pool menu
+  await handleMessagePoolButton(bot, callbackQuery);
 }
 
 // ==================== SAVED TEMPLATES HANDLERS ====================
@@ -2625,13 +2747,30 @@ export async function handleGroupsButton(bot, callbackQuery) {
 
   const accountId = accountLinker.getActiveAccountId(userId);
   const groupsCount = await groupService.getActiveGroupsCount(accountId);
+  
+  // Get group-related settings
+  const settings = await configService.getAccountSettings(accountId);
+  const groupDelayMin = settings?.groupDelayMin;
+  const groupDelayMax = settings?.groupDelayMax;
+  const groupDelayText = groupDelayMin !== null && groupDelayMax !== null
+    ? `${groupDelayMin}-${groupDelayMax}s`
+    : 'Default (5-10s)';
+  
+  const blacklistResult = await groupBlacklistService.getBlacklistedGroups(accountId);
+  const blacklistCount = blacklistResult.groups?.length || 0;
+
+  const groupsMessage = `👥 <b>Group Management</b>\n\n` +
+    `📊 <b>Active Groups:</b> ${groupsCount}\n` +
+    `⏳ <b>Group Delay:</b> ${groupDelayText}\n` +
+    `🚫 <b>Blacklisted:</b> ${blacklistCount} group(s)\n\n` +
+    `Select an action:`;
 
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
-    `👥 <b>Group Management</b>\n\n📊 Active Groups: ${groupsCount}\n\nSelect an action:`,
-    { parse_mode: 'HTML', ...createGroupsMenu() }
+    groupsMessage,
+    { parse_mode: 'HTML', ...createGroupsMenu(groupDelayMin, groupDelayMax, blacklistCount) }
   );
 
   await safeAnswerCallback(bot, callbackQuery.id);
@@ -3180,7 +3319,7 @@ export async function handlePremium(bot, callbackQuery) {
         }
       );
     } else {
-      // Modern premium purchase UI
+      // Premium purchase UI - contact support only
       const message = `╔═══════════════════════════╗
 ║   ⭐ <b>PREMIUM SUBSCRIPTION</b>   ║
 ╚═══════════════════════════╝
@@ -3190,7 +3329,7 @@ export async function handlePremium(bot, callbackQuery) {
 └───────────────────────────┘
 
 <b>₹30/month</b> - One-time payment
-<i>Auto-renewal available</i>
+<i>30 days of premium access</i>
 
 ┌───────────────────────────┐
 │  ✨ <b>Premium Benefits</b>   │
@@ -3212,15 +3351,12 @@ export async function handlePremium(bot, callbackQuery) {
    Get help faster
 
 ┌───────────────────────────┐
-│  📝 <b>How to Purchase</b>     │
+│  💳 <b>How to Purchase</b>      │
 └───────────────────────────┘
 
-1️⃣ Click "💬 Contact Support" below
-2️⃣ Send payment of ₹30
-3️⃣ Share payment screenshot
-4️⃣ Get instant activation!
+To purchase premium, please contact our support team. They will guide you through the payment process and activate your premium subscription.
 
-<i>Average activation time: 5-10 minutes</i>`;
+<i>Click the button below to contact support</i>`;
       
       await safeEditMessage(
         bot,
@@ -3231,7 +3367,7 @@ export async function handlePremium(bot, callbackQuery) {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '💬 Contact Support to Purchase', url: 'https://t.me/CoupSupportBot' }],
+              [{ text: '💬 Contact Support', url: 'https://t.me/CoupSupportBot' }],
               [{ text: '❓ FAQ', callback_data: 'premium_faq' }, { text: '📊 View Benefits', callback_data: 'premium_benefits' }],
               [{ text: '🏠 Back to Menu', callback_data: 'btn_main_menu' }]
             ]
@@ -3362,10 +3498,103 @@ Start broadcasting immediately:
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '💬 Purchase Premium', url: 'https://t.me/CoupSupportBot' }],
+          [{ text: '💬 Contact Support', url: 'https://t.me/CoupSupportBot' }],
           [{ text: '🔙 Back to Premium', callback_data: 'btn_premium' }]
         ]
       }
     }
   );
+}
+
+
+/**
+ * Handle payment status check
+ */
+export async function handleCheckPaymentStatus(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+
+  await safeAnswerCallback(bot, callbackQuery.id);
+
+  try {
+    const isPremium = await premiumService.isPremium(userId);
+    if (isPremium) {
+      const subscription = await premiumService.getSubscription(userId);
+      const expiresAt = new Date(subscription.expires_at);
+      const expiresAtFormatted = expiresAt.toLocaleDateString('en-IN', { 
+        day: 'numeric', 
+        month: 'long', 
+        year: 'numeric' 
+      });
+
+      await safeEditMessage(
+        bot,
+        chatId,
+        callbackQuery.message.message_id,
+        `✅ <b>Premium Active!</b>\n\nYour premium subscription is active.\n\n<b>Expires:</b> ${expiresAtFormatted}\n<b>Days Remaining:</b> ${subscription.daysRemaining}`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '⭐ View Premium', callback_data: 'btn_premium' }],
+              [{ text: '🏠 Back to Menu', callback_data: 'btn_main_menu' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+
+    const submission = await paymentVerificationService.getSubmissionStatus(userId);
+    if (!submission) {
+      await safeEditMessage(
+        bot,
+        chatId,
+        callbackQuery.message.message_id,
+        `📭 <b>No Payment Submission</b>\n\nYou haven't submitted any payment yet.`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💳 Purchase Premium', callback_data: 'btn_premium' }],
+              [{ text: '🏠 Back to Menu', callback_data: 'btn_main_menu' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+
+    let statusMessage = '';
+    let statusEmoji = '⏳';
+    
+    if (submission.status === 'verified') {
+      statusEmoji = '✅';
+      statusMessage = 'Your payment has been verified and premium is active!';
+    } else if (submission.status === 'pending') {
+      statusEmoji = '⏳';
+      statusMessage = 'Your payment is being verified. Please wait...';
+    } else if (submission.status === 'rejected') {
+      statusEmoji = '❌';
+      statusMessage = `Your payment was rejected: ${submission.rejection_reason || 'Unknown reason'}`;
+    }
+
+    await safeEditMessage(
+      bot,
+      chatId,
+      callbackQuery.message.message_id,
+      `${statusEmoji} <b>Payment Status</b>\n\n${statusMessage}\n\n<b>Transaction ID:</b> <code>${submission.transaction_id}</code>\n<b>Amount:</b> ₹${submission.amount}\n<b>Status:</b> ${submission.status.toUpperCase()}`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Refresh', callback_data: 'premium_check_status' }],
+            [{ text: '🏠 Back to Menu', callback_data: 'btn_main_menu' }]
+          ]
+        }
+      }
+    );
+  } catch (error) {
+    logger.logError('PREMIUM', userId, error, 'Error checking payment status');
+  }
 }

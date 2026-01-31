@@ -40,6 +40,18 @@ console.log = function(...args) {
   ) {
     return; // Suppress these normal connection management logs
   }
+  
+  // Filter out Telegram client flood wait info logs (these are normal and expected)
+  if (
+    message.includes('Sleeping for') && 
+    message.includes('on flood wait') ||
+    message.includes('[INFO]') && 
+    message.includes('flood wait') &&
+    message.includes('messages.GetDialogs')
+  ) {
+    return; // Suppress these normal flood wait handling logs from Telegram library
+  }
+  
   originalConsoleLog.apply(console, args);
 };
 
@@ -63,6 +75,7 @@ console.error = function(...args) {
   // Check if any argument is an Error object
   let isTimeoutError = false;
   let isConnectionError = false;
+  let isBinaryReaderError = false;
   
   // First, check all arguments for Error objects
   for (const arg of args) {
@@ -85,6 +98,15 @@ console.error = function(...args) {
         isConnectionError = true;
         break;
       }
+      
+      // Check for BinaryReader errors (recoverable MTProto errors)
+      if (errorMessage.includes('readUInt32LE') || 
+          errorMessage.includes('BinaryReader') || 
+          errorMessage.includes('Cannot read properties of undefined') ||
+          (errorStack && errorStack.includes('BinaryReader'))) {
+        isBinaryReaderError = true;
+        break;
+      }
     }
   }
   
@@ -96,6 +118,11 @@ console.error = function(...args) {
   // If it's a connection error, suppress it
   if (isConnectionError) {
     return; // Suppress these normal reconnection errors
+  }
+  
+  // If it's a BinaryReader error, suppress it (recoverable MTProto errors)
+  if (isBinaryReaderError) {
+    return; // Suppress these recoverable MTProto errors
   }
   
   // Check the joined message string as well (for cases where error is logged as string)
@@ -117,6 +144,47 @@ console.error = function(...args) {
     return; // Suppress these normal reconnection errors
   }
   
+  // Filter out BinaryReader errors (recoverable MTProto errors)
+  if (message.includes('readUInt32LE') || 
+      message.includes('BinaryReader') || 
+      message.includes('Cannot read properties of undefined') ||
+      (message.includes('BinaryReader') && message.includes('MTProtoSender'))) {
+    return; // Suppress these recoverable MTProto errors
+  }
+  
+  // Filter out "Unhandled error while receiving data" messages that contain BinaryReader errors
+  if (message.includes('Unhandled error while receiving data') && 
+      (message.includes('BinaryReader') || message.includes('readUInt32LE') || message.includes('Cannot read properties of undefined'))) {
+    return; // Suppress these recoverable MTProto errors
+  }
+  
+  // Filter out BinaryReader errors in any format (including "[ERROR] - [Unhandled error while receiving data]")
+  // This catches errors logged by the Telegram library itself
+  if (message.includes('readUInt32LE') || 
+      (message.includes('BinaryReader') && (message.includes('MTProtoSender') || message.includes('BinaryReader.readInt')))) {
+    return; // Suppress these recoverable MTProto errors
+  }
+  
+  // Catch the specific error format: "[ERROR] - [Unhandled error while receiving data]" followed by BinaryReader error
+  if ((message.includes('[ERROR]') || message.includes('ERROR')) && 
+      message.includes('Unhandled error while receiving data')) {
+    // Check if any of the args contain BinaryReader error details
+    for (const arg of args) {
+      if (arg instanceof Error) {
+        const argMsg = arg.message || '';
+        const argStack = arg.stack || '';
+        if (argMsg.includes('readUInt32LE') || 
+            argMsg.includes('BinaryReader') ||
+            argStack.includes('BinaryReader')) {
+          return; // Suppress these recoverable MTProto errors
+        }
+      } else if (typeof arg === 'string' && 
+                 (arg.includes('readUInt32LE') || arg.includes('BinaryReader'))) {
+        return; // Suppress these recoverable MTProto errors
+      }
+    }
+  }
+  
   // Filter out connection-related messages
   if (message.includes('Connection closed') || 
       message.includes('connection closed') ||
@@ -125,6 +193,13 @@ console.error = function(...args) {
       message.includes('[Disconnecting from') ||
       message.includes('[Disconnecting...]')) {
     return; // Normal connection management
+  }
+  
+  // Additional filter: Catch "[ERROR] - [Unhandled error while receiving data]" with BinaryReader errors
+  if (message.includes('[ERROR]') && 
+      message.includes('Unhandled error while receiving data') &&
+      (message.includes('BinaryReader') || message.includes('readUInt32LE') || message.includes('Cannot read properties of undefined'))) {
+    return; // Suppress these recoverable MTProto errors
   }
   
   originalConsoleError.apply(console, args);
@@ -138,6 +213,7 @@ import {
   setPendingPhoneNumbersReference,
   handleOTPCallback,
   handleSetStartMessage,
+  handleMessagesMenu,
   handleSetStartMessageButton,
   handleStartBroadcast,
   handleStartBroadcastButton,
@@ -155,22 +231,27 @@ import {
   handleGroupsButton,
   handleRefreshGroups,
   handleListGroups,
-  handleABMessagesButton,
-  handleABSetMessage,
-  handleABMessageInput,
-  handleABViewMessages,
+  handleMessagePoolButton,
+  handlePoolAddMessage,
+  handlePoolMessageInput,
+  handlePoolViewMessages,
+  handlePoolDeleteMessage,
+  handlePoolModeChange,
+  handlePoolToggle,
+  handlePoolClear,
   handleApplyTags,
   handlePremium,
   handlePremiumFAQ,
   handlePremiumBenefits,
-  handleLoginWeb,
   handleLoginSharePhone,
   handleSharePhoneConfirm,
   handleLoginTypePhone,
   handleLoginCancel,
+  handleCheckPaymentStatus,
 } from './handlers/commandHandler.js';
 import {
   handleConfigButton,
+  handleIntervalMenu,
   handleConfigCustomInterval,
   handleCustomIntervalInput,
   handleConfigGroupDelay,
@@ -181,8 +262,6 @@ import {
   handleQuietHoursView,
   handleQuietHoursClear,
   handleQuietHoursInput,
-  handleConfigAB,
-  handleConfigABMode,
   handleConfigSchedule,
   handleScheduleSet,
   handleScheduleView,
@@ -197,6 +276,7 @@ import {
   handleBlacklistAdd,
   handleBlacklistView,
   handleBlacklistRemove,
+  handleAutoReplyMenu,
   handleConfigAutoReplyDm,
   handleAutoReplyDmToggle,
   handleAutoReplyDmSetMessage,
@@ -212,15 +292,20 @@ import {
 } from './handlers/configHandlers.js';
 import {
   handleStatsButton,
+  handleStatsPeriod,
   handleTopGroups,
   handleDetailedStats,
   handleProblematicGroups,
   handleABResults,
+  handleStatsTrends,
 } from './handlers/statsHandlers.js';
 import notificationService from './services/notificationService.js';
 import channelVerificationService from './services/channelVerificationService.js';
 import { initializeAdminBot } from './handlers/adminBotHandlers.js';
 import { createMainMenu, createBackButton } from './handlers/keyboardHandler.js';
+import express from 'express';
+import paymentVerificationService from './services/paymentVerificationService.js';
+import premiumService from './services/premiumService.js';
 
 // Environment validation
 function validateEnvironment() {
@@ -565,7 +650,7 @@ const pendingPhoneNumbers = new Set();
 const pendingStartMessages = new Set();
 const pendingPasswords = new Set();
 const pendingQuietHoursInputs = new Map(); // userId -> { accountId, type: 'start' | 'end' }
-const pendingABMessages = new Map(); // userId -> { accountId, variant: 'A' | 'B' }
+const pendingPoolMessages = new Map(); // userId -> { accountId }
 const pendingScheduleInputs = new Map(); // userId -> { accountId, type: 'schedule' }
 const pendingCustomIntervalInputs = new Map(); // userId -> { accountId }
 const pendingGroupDelayInputs = new Map(); // userId -> { accountId }
@@ -1096,7 +1181,7 @@ bot.on('message', async (msg) => {
   
   // Log all incoming messages for debugging
   console.log(`[MESSAGE HANDLER] User ${userId} sent message: "${msg.text?.substring(0, 50) || 'non-text'}"`);
-  console.log(`[MESSAGE HANDLER] Pending states - Phone: ${pendingPhoneNumbers.has(userId)}, StartMsg: ${pendingStartMessages.has(userId)}, Password: ${pendingPasswords.has(userId)}, AB: ${pendingABMessages.has(userId)}, QuietHours: ${pendingQuietHoursInputs.has(userId)}, Schedule: ${pendingScheduleInputs.has(userId)}, CustomInterval: ${pendingCustomIntervalInputs.has(userId)}`);
+  console.log(`[MESSAGE HANDLER] Pending states - Phone: ${pendingPhoneNumbers.has(userId)}, StartMsg: ${pendingStartMessages.has(userId)}, Password: ${pendingPasswords.has(userId)}, Pool: ${pendingPoolMessages.has(userId)}, QuietHours: ${pendingQuietHoursInputs.has(userId)}, Schedule: ${pendingScheduleInputs.has(userId)}, CustomInterval: ${pendingCustomIntervalInputs.has(userId)}`);
   
   // Handle contact sharing (phone number via button)
   if (msg.contact && msg.contact.phone_number) {
@@ -1167,17 +1252,16 @@ bot.on('message', async (msg) => {
     } else {
       logger.logChange('MESSAGE_STATE', userId, 'Start message input still pending (retry needed)');
     }
-  } else if (pendingABMessages.has(userId)) {
-    const pendingData = pendingABMessages.get(userId);
+  } else if (pendingPoolMessages.has(userId)) {
+    const pendingData = pendingPoolMessages.get(userId);
     if (!pendingData) {
-      // Invalid state, clear it
-      pendingABMessages.delete(userId);
-      console.log(`[MESSAGE HANDLER] Invalid pending AB message state for user ${userId}, cleared`);
+      pendingPoolMessages.delete(userId);
+      console.log(`[MESSAGE HANDLER] Invalid pending pool message state for user ${userId}, cleared`);
       return;
     }
-    const { accountId, variant } = pendingData;
-    pendingABMessages.delete(userId);
-    await handleABMessageInput(bot, msg, accountId, variant);
+    const { accountId } = pendingData;
+    pendingPoolMessages.delete(userId);
+    await handlePoolMessageInput(bot, msg, accountId);
   } else if (pendingPasswords.has(userId) || accountLinker.isPasswordRequired(userId)) {
     // Only remove from pendingPasswords if password is successfully verified
     // Keep it if verification fails so user can retry
@@ -1208,7 +1292,7 @@ bot.on('message', async (msg) => {
       // Notify user that 2FA password is needed (only once)
       await bot.sendMessage(
         notification.chatId,
-        '🔐 <b>2FA Password Required</b>\n\n✅ QR code scanned successfully!\n\n🔒 Your account has two-factor authentication enabled.\n\nPlease enter your 2FA password to complete the login:',
+        '🔐 <b>2FA Password Required</b>\n\n🔒 Your account has two-factor authentication enabled.\n\nPlease enter your 2FA password to complete the login:',
         { parse_mode: 'HTML' }
       );
       accountLinker.markWebLoginPasswordNotified(userId);
@@ -1392,6 +1476,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     data === 'btn_main_menu' ? 'Main Menu' :
                     data === 'btn_account' ? 'Account' :
                     data === 'btn_link' ? 'Link Account' :
+                    data === 'btn_messages_menu' ? 'Messages Menu' :
                     data === 'btn_set_start_msg' ? 'Set Message' :
                     data === 'btn_start_broadcast' ? 'Start Broadcast' :
                     data === 'btn_stop_broadcast' ? 'Stop Broadcast' :
@@ -1403,6 +1488,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     data === 'btn_list_groups' ? 'List Groups' :
                     data === 'btn_join_groups' ? 'Join Groups' :
                     data === 'btn_mention' ? 'Mentions' :
+                    data === 'btn_auto_reply' ? 'Auto Reply' :
                     data === 'stop_broadcast' ? 'Stop Broadcast (Callback)' :
                     data;
   
@@ -1430,9 +1516,9 @@ bot.on('callback_query', async (callbackQuery) => {
         pendingPasswords.delete(userId);
         console.log(`[CALLBACK] Cleared pending password state for user ${userId}`);
       }
-      if (pendingABMessages.has(userId)) {
-        pendingABMessages.delete(userId);
-        console.log(`[CALLBACK] Cleared pending AB message state for user ${userId}`);
+      if (pendingPoolMessages.has(userId)) {
+        pendingPoolMessages.delete(userId);
+        console.log(`[CALLBACK] Cleared pending pool message state for user ${userId}`);
       }
       if (pendingQuietHoursInputs.has(userId)) {
         pendingQuietHoursInputs.delete(userId);
@@ -1455,8 +1541,6 @@ bot.on('callback_query', async (callbackQuery) => {
         addPendingStateWithTimeout(pendingPhoneNumbers, userId);
         logger.logChange('PHONE_INPUT', userId, 'Waiting for phone number input');
       }
-    } else if (data === 'btn_login_web') {
-      await handleLoginWeb(bot, callbackQuery);
     } else if (data === 'btn_login_share_phone') {
       await handleLoginSharePhone(bot, callbackQuery);
     } else if (data === 'btn_login_type_phone') {
@@ -1467,6 +1551,8 @@ bot.on('callback_query', async (callbackQuery) => {
       }
     } else if (data === 'btn_login_cancel') {
       await handleLoginCancel(bot, callbackQuery);
+    } else if (data === 'btn_messages_menu') {
+      await handleMessagesMenu(bot, callbackQuery);
     } else if (data === 'btn_set_start_msg') {
       await handleSetStartMessageButton(bot, callbackQuery);
       addPendingStateWithTimeout(pendingStartMessages, userId);
@@ -1492,6 +1578,11 @@ bot.on('callback_query', async (callbackQuery) => {
       await handlePremiumFAQ(bot, callbackQuery);
     } else if (data === 'premium_benefits') {
       await handlePremiumBenefits(bot, callbackQuery);
+    } else if (data === 'premium_check_status') {
+      await handleCheckPaymentStatus(bot, callbackQuery);
+    } else if (data.startsWith('check_payment_')) {
+      // Handle payment status check with order ID
+      await handleCheckPaymentStatus(bot, callbackQuery);
     } else if (data === 'btn_groups') {
       await handleGroupsButton(bot, callbackQuery);
     } else if (data === 'btn_refresh_groups') {
@@ -1502,6 +1593,10 @@ bot.on('callback_query', async (callbackQuery) => {
       await handleConfigButton(bot, callbackQuery);
     } else if (data === 'btn_mention') {
       await handleConfigMention(bot, callbackQuery);
+    } else if (data === 'btn_auto_reply') {
+      await handleAutoReplyMenu(bot, callbackQuery);
+    } else if (data === 'btn_config_interval_menu') {
+      await handleIntervalMenu(bot, callbackQuery);
     } else if (data === 'btn_config_custom_interval') {
       const result = await handleConfigCustomInterval(bot, callbackQuery);
       if (result && result.accountId) {
@@ -1557,20 +1652,38 @@ bot.on('callback_query', async (callbackQuery) => {
         return;
       }
       await handleConfigMentionCount(bot, callbackQuery, count);
-    } else if (data === 'btn_ab_messages') {
-      await handleABMessagesButton(bot, callbackQuery);
-    } else if (data === 'ab_set_a') {
-      const result = await handleABSetMessage(bot, callbackQuery, 'A');
+    } else if (data === 'btn_message_pool') {
+      await handleMessagePoolButton(bot, callbackQuery);
+    } else if (data === 'pool_menu') {
+      await handleMessagePoolButton(bot, callbackQuery);
+    } else if (data === 'pool_add_message') {
+      const result = await handlePoolAddMessage(bot, callbackQuery);
       if (result) {
-        addPendingStateWithTimeout(pendingABMessages, userId, result);
+        addPendingStateWithTimeout(pendingPoolMessages, userId, result);
       }
-    } else if (data === 'ab_set_b') {
-      const result = await handleABSetMessage(bot, callbackQuery, 'B');
-      if (result) {
-        addPendingStateWithTimeout(pendingABMessages, userId, result);
+    } else if (data === 'pool_view_messages') {
+      await handlePoolViewMessages(bot, callbackQuery);
+    } else if (data.startsWith('pool_delete_')) {
+      const messageId = parseInt(data.replace('pool_delete_', ''));
+      if (!isNaN(messageId)) {
+        await handlePoolDeleteMessage(bot, callbackQuery, messageId);
       }
-    } else if (data === 'ab_view_messages') {
-      await handleABViewMessages(bot, callbackQuery);
+    } else if (data === 'pool_mode_random') {
+      await handlePoolModeChange(bot, callbackQuery, 'random');
+    } else if (data === 'pool_mode_rotate') {
+      await handlePoolModeChange(bot, callbackQuery, 'rotate');
+    } else if (data === 'pool_mode_sequential') {
+      await handlePoolModeChange(bot, callbackQuery, 'sequential');
+    } else if (data === 'pool_toggle') {
+      await handlePoolToggle(bot, callbackQuery);
+    } else if (data === 'pool_clear_confirm') {
+      await handlePoolClear(bot, callbackQuery);
+    } else if (data.startsWith('pool_page_')) {
+      // Handle pagination - refresh view
+      await handlePoolViewMessages(bot, callbackQuery);
+    } else if (data.startsWith('pool_view_')) {
+      // View single message - just refresh list for now
+      await handlePoolViewMessages(bot, callbackQuery);
     } else if (data === 'btn_config_group_delay') {
       const result = await handleConfigGroupDelay(bot, callbackQuery);
       if (result && result.accountId) {
@@ -1580,6 +1693,16 @@ bot.on('callback_query', async (callbackQuery) => {
       await handleConfigForwardMode(bot, callbackQuery);
     } else if (data === 'btn_stats') {
       await handleStatsButton(bot, callbackQuery);
+    } else if (data === 'stats_period_today') {
+      await handleStatsPeriod(bot, callbackQuery, 'today');
+    } else if (data === 'stats_period_week') {
+      await handleStatsPeriod(bot, callbackQuery, 'week');
+    } else if (data === 'stats_period_month') {
+      await handleStatsPeriod(bot, callbackQuery, 'month');
+    } else if (data === 'stats_period_all') {
+      await handleStatsPeriod(bot, callbackQuery, 'all');
+    } else if (data === 'stats_trends') {
+      await handleStatsTrends(bot, callbackQuery);
     } else if (data === 'stats_top_groups') {
       await handleTopGroups(bot, callbackQuery);
     } else if (data === 'stats_detailed') {

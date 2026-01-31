@@ -10,7 +10,7 @@ import groupBlacklistService from '../services/groupBlacklistService.js';
 import { config } from '../config.js';
 import logger from '../utils/logger.js';
 import { safeEditMessage, safeAnswerCallback } from '../utils/safeEdit.js';
-import { createConfigMenu, createQuietHoursKeyboard, createABModeKeyboard, createScheduleKeyboard, createMainMenu, createBackButton } from './keyboardHandler.js';
+import { createConfigMenu, createQuietHoursKeyboard, createScheduleKeyboard, createMainMenu, createBackButton, createBackToGroupsButton, createGroupsMenu, createAutoReplyMenu, createIntervalMenu } from './keyboardHandler.js';
 
 // Helper function to show verification required (imported from commandHandler)
 // Helper function to create channel buttons keyboard
@@ -101,39 +101,73 @@ export async function handleConfigButton(bot, callbackQuery) {
     ? { start: settings.quietStart, end: settings.quietEnd }
     : null;
   
-  const groupDelayText = settings?.groupDelayMin !== null && settings?.groupDelayMax !== null
-    ? `${settings.groupDelayMin}-${settings.groupDelayMax}s`
-    : 'Default (5-10s)';
-  
   const forwardModeText = settings?.forwardMode ? '🟢 Enabled' : '⚪ Disabled';
-  const abModeText = settings?.abMode ? `${settings.abModeType.charAt(0).toUpperCase() + settings.abModeType.slice(1)}` : 'Disabled';
+  const poolModeText = settings?.useMessagePool ? `${settings.messagePoolMode === 'random' ? '🎲 Random' : settings.messagePoolMode === 'rotate' ? '🔄 Rotate' : settings.messagePoolMode === 'sequential' ? '➡️ Sequential' : 'Random'}` : '⚪ Disabled';
 
   const autoReplyDmText = settings?.autoReplyDmEnabled ? '🟢 Enabled' : '⚪ Disabled';
   const autoReplyGroupsText = settings?.autoReplyGroupsEnabled ? '🟢 Enabled' : '⚪ Disabled';
-  const blacklistCount = (await groupBlacklistService.getBlacklistedGroups(accountId)).groups?.length || 0;
 
   const accountPhone = (await accountLinker.getAccounts(userId)).find(a => a.accountId === accountId)?.phone || 'Unknown';
   const configMessage = `⚙️ <b>Settings</b>\n\n` +
     `📱 <b>Account:</b> ${accountPhone}\n\n` +
     `⏱️ <b>Broadcast Interval:</b> ${currentInterval} min\n` +
-    `⏳ <b>Group Delay:</b> ${groupDelayText}\n` +
     `📤 <b>Forward Mode:</b> ${forwardModeText}\n` +
-    `🔄 <b>A/B Testing:</b> ${abModeText}\n` +
+    `🎲 <b>Message Pool:</b> ${poolModeText}\n` +
     `🌙 <b>Quiet Hours:</b> ${quietHours ? `${quietHours.start} - ${quietHours.end}` : 'Not set'}\n` +
-    `🚫 <b>Group Blacklist:</b> ${blacklistCount} group(s)\n` +
     `💬 <b>Auto Reply DM:</b> ${autoReplyDmText}\n` +
-    `💬 <b>Auto Reply Groups:</b> ${autoReplyGroupsText}`;
+    `💬 <b>Auto Reply Groups:</b> ${autoReplyGroupsText}\n\n` +
+    `👥 <b>Group Settings:</b> Manage in Groups menu`;
 
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
     configMessage,
-    { parse_mode: 'HTML', ...createConfigMenu(currentInterval, quietHours, settings?.abMode || false, settings?.abModeType || 'single', settings?.groupDelayMin, settings?.groupDelayMax, settings?.forwardMode || false) }
+    { parse_mode: 'HTML', ...createConfigMenu(currentInterval, quietHours, settings?.forwardMode || false) }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
   return { accountId }; // Return accountId for state management
+}
+
+/**
+ * Handle interval menu (combined Broadcast and Auto Reply intervals)
+ */
+export async function handleIntervalMenu(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Interval Menu', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const broadcastInterval = settings?.manualInterval || 11;
+  const autoReplyInterval = settings?.autoReplyCheckInterval || 0;
+
+  let menuMessage = `⏱️ <b>Interval Settings</b>\n\n`;
+  menuMessage += `Configure timing intervals for broadcasts and auto replies.\n\n`;
+  menuMessage += `📡 <b>Broadcast Interval:</b> ${broadcastInterval} minutes\n`;
+  menuMessage += `💬 <b>Auto Reply Interval:</b> ${autoReplyInterval > 0 ? `${autoReplyInterval} seconds` : 'Real-time (instant)'}\n\n`;
+  menuMessage += `Select an option below to configure:`;
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    menuMessage,
+    { parse_mode: 'HTML', ...createIntervalMenu() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
 }
 
 /**
@@ -163,12 +197,20 @@ export async function handleConfigCustomInterval(bot, callbackQuery) {
     `<b>Current interval:</b> ${currentInterval} minutes\n\n` +
     `Please enter the interval in minutes (e.g., 15, 30, 60):`;
 
+  const backKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Interval', callback_data: 'btn_config_interval_menu' }],
+      ],
+    },
+  };
+
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
     intervalMessage,
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...backKeyboard }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
@@ -283,7 +325,7 @@ export async function handleConfigGroupDelay(bot, callbackQuery) {
     chatId,
     callbackQuery.message.message_id,
     delayMessage,
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToGroupsButton() }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
@@ -303,7 +345,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     await bot.sendMessage(
       chatId,
       `⏳ <b>Group Delay Configuration</b>\n\nPlease enter the delay range in format: <code>min-max</code>\n\nExamples:\n• <code>5-10</code> for 5 to 10 seconds\n• <code>default</code> to use default\n\nSend your delay range now:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToGroupsButton() }
     );
     return false; // Keep pending state
   }
@@ -313,10 +355,15 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     const result = await configService.setGroupDelay(accountId, null, null);
     
     if (result.success) {
+      // Get updated settings and show groups menu
+      const settings = await configService.getAccountSettings(accountId);
+      const blacklistResult = await groupBlacklistService.getBlacklistedGroups(accountId);
+      const blacklistCount = blacklistResult.groups?.length || 0;
+      
       await bot.sendMessage(
         chatId,
         `✅ <b>Group Delay Reset to Default</b>\n\n⏳ Using default delay: 5-10 seconds`,
-        { parse_mode: 'HTML', ...await createMainMenu(userId) }
+        { parse_mode: 'HTML', ...createGroupsMenu(null, null, blacklistCount) }
       );
       logger.logChange('CONFIG', userId, 'Group delay reset to default');
       return true; // Success - clear pending state
@@ -324,7 +371,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
       await bot.sendMessage(
         chatId,
         `❌ <b>Failed to Reset Delay</b>\n\n<b>Error:</b> ${result.error}\n\nTry again:`,
-        { parse_mode: 'HTML', ...createBackButton() }
+        { parse_mode: 'HTML', ...createBackToGroupsButton() }
       );
       return false; // Keep pending state
     }
@@ -336,7 +383,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     await bot.sendMessage(
       chatId,
       `❌ Invalid format. Please use format: <code>min-max</code>\n\nExamples:\n• <code>5-10</code> for 5 to 10 seconds\n• <code>3-7</code> for 3 to 7 seconds\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToGroupsButton() }
     );
     return false; // Keep pending state
   }
@@ -348,7 +395,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     await bot.sendMessage(
       chatId,
       `❌ Invalid values. Minimum and maximum must be at least 1 second.\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToGroupsButton() }
     );
     return false; // Keep pending state
   }
@@ -357,7 +404,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     await bot.sendMessage(
       chatId,
       `❌ Invalid range. Minimum (${minSeconds}) cannot be greater than maximum (${maxSeconds}).\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToGroupsButton() }
     );
     return false; // Keep pending state
   }
@@ -366,7 +413,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     await bot.sendMessage(
       chatId,
       `❌ Values too large. Maximum delay is 300 seconds (5 minutes).\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToGroupsButton() }
     );
     return false; // Keep pending state
   }
@@ -375,10 +422,15 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
   const result = await configService.setGroupDelay(accountId, minSeconds, maxSeconds);
   
   if (result.success) {
+    // Get updated settings and show groups menu
+    const settings = await configService.getAccountSettings(accountId);
+    const blacklistResult = await groupBlacklistService.getBlacklistedGroups(accountId);
+    const blacklistCount = blacklistResult.groups?.length || 0;
+    
     await bot.sendMessage(
       chatId,
       `✅ <b>Group Delay Set Successfully!</b>\n\n⏳ <b>Delay Range:</b> ${minSeconds}-${maxSeconds} seconds\n\nMessages will wait a random delay between ${minSeconds} and ${maxSeconds} seconds before sending to the next group.`,
-      { parse_mode: 'HTML', ...await createMainMenu(userId) }
+      { parse_mode: 'HTML', ...createGroupsMenu(minSeconds, maxSeconds, blacklistCount) }
     );
     console.log(`[GROUP_DELAY] User ${userId} successfully set delay to ${minSeconds}-${maxSeconds} seconds`);
     return true; // Success - clear pending state
@@ -386,7 +438,7 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     await bot.sendMessage(
       chatId,
       `❌ <b>Failed to Set Delay</b>\n\n<b>Error:</b> ${result.error}\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToGroupsButton() }
     );
     console.log(`[GROUP_DELAY] User ${userId} failed to set delay: ${result.error}`);
     return false; // Keep pending state
@@ -1207,7 +1259,7 @@ export async function handleConfigGroupBlacklist(bot, callbackQuery) {
     inline_keyboard: [
       [{ text: '🔍 Search Groups', callback_data: 'btn_blacklist_search' }],
       blacklistCount > 0 ? [{ text: '📋 View Blacklist', callback_data: 'btn_blacklist_view' }] : [],
-      [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+      [{ text: '🔙 Back to Groups', callback_data: 'btn_groups' }],
     ],
   };
 
@@ -1456,7 +1508,7 @@ export async function handleConfigAutoReplyDm(bot, callbackQuery) {
       ] : [
         { text: '✏️ Set Message', callback_data: 'auto_reply_dm_set_message' }
       ],
-      [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+      [{ text: '🔙 Back to Auto Reply', callback_data: 'btn_auto_reply' }],
     ],
   };
 
@@ -1566,6 +1618,10 @@ export async function handleAutoReplyDmMessageInput(bot, msg, accountId) {
   const result = await configService.setAutoReplyDm(accountId, enabled, message);
   
   if (result.success) {
+    // Refresh connection to ensure auto-reply handler is set up
+    const autoReplyConnectionManager = (await import('../services/autoReplyConnectionManager.js')).default;
+    await autoReplyConnectionManager.keepAccountConnected(accountId);
+    
     await bot.sendMessage(
       chatId,
       '✅ Auto reply DM message set successfully!',
@@ -1621,7 +1677,7 @@ export async function handleConfigAutoReplyGroups(bot, callbackQuery) {
       ] : [
         { text: '✏️ Set Message', callback_data: 'auto_reply_groups_set_message' }
       ],
-      [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+      [{ text: '🔙 Back to Auto Reply', callback_data: 'btn_auto_reply' }],
     ],
   };
 
@@ -1635,6 +1691,46 @@ export async function handleConfigAutoReplyGroups(bot, callbackQuery) {
   
   await safeAnswerCallback(bot, callbackQuery.id);
   return { accountId };
+}
+
+/**
+ * Handle auto reply menu (combined DM and Groups)
+ */
+export async function handleAutoReplyMenu(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Auto Reply Menu', chatId);
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const settings = await configService.getAccountSettings(accountId);
+  const dmEnabled = settings?.autoReplyDmEnabled || false;
+  const groupsEnabled = settings?.autoReplyGroupsEnabled || false;
+
+  let menuMessage = `💬 <b>Auto Reply</b>\n\n`;
+  menuMessage += `Configure automatic replies for direct messages and groups.\n\n`;
+  menuMessage += `📱 <b>Direct Messages:</b> ${dmEnabled ? '🟢 Enabled' : '⚪ Disabled'}\n`;
+  menuMessage += `👥 <b>Groups:</b> ${groupsEnabled ? '🟢 Enabled' : '⚪ Disabled'}\n\n`;
+  menuMessage += `Select an option below to configure:`;
+
+  await safeEditMessage(
+    bot,
+    chatId,
+    callbackQuery.message.message_id,
+    menuMessage,
+    { parse_mode: 'HTML', ...createAutoReplyMenu() }
+  );
+  
+  await safeAnswerCallback(bot, callbackQuery.id);
 }
 
 /**
@@ -1731,6 +1827,10 @@ export async function handleAutoReplyGroupsMessageInput(bot, msg, accountId) {
   const result = await configService.setAutoReplyGroups(accountId, enabled, message);
   
   if (result.success) {
+    // Refresh connection to ensure auto-reply handler is set up
+    const autoReplyConnectionManager = (await import('../services/autoReplyConnectionManager.js')).default;
+    await autoReplyConnectionManager.keepAccountConnected(accountId);
+    
     await bot.sendMessage(
       chatId,
       '✅ Auto reply groups message set successfully!',
@@ -1781,7 +1881,7 @@ export async function handleAutoReplySetInterval(bot, callbackQuery) {
       [{ text: '⏱️ 60 seconds (1 min)', callback_data: 'auto_reply_interval_60' }],
       [{ text: '⏱️ 300 seconds (5 min)', callback_data: 'auto_reply_interval_300' }],
       [{ text: '✏️ Custom', callback_data: 'auto_reply_interval_custom' }],
-      [{ text: '🔙 Back', callback_data: 'btn_config' }],
+      [{ text: '🔙 Back to Interval', callback_data: 'btn_config_interval_menu' }],
     ],
   };
 
@@ -1813,32 +1913,30 @@ export async function handleAutoReplyIntervalSelect(bot, callbackQuery, interval
     return;
   }
 
-  const result = await configService.setAutoReplyCheckInterval(accountId, intervalSeconds);
+  // Interval mode is disabled - always use real-time event-driven mode
+  // Store interval in DB for reference, but always use real-time handlers
+  const result = await configService.setAutoReplyCheckInterval(accountId, 0); // Force to 0 (real-time)
   
   if (result.success) {
-    const intervalText = intervalSeconds > 0 ? `${intervalSeconds} seconds` : 'Real-time';
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: `✅ Check interval set to ${intervalText}`,
+      text: `✅ Auto-reply uses real-time mode (event-driven, no polling)`,
       show_alert: true,
     });
     
-    // Restart interval service if needed
+    // Always use real-time connection manager (no interval polling)
     const autoReplyIntervalService = (await import('../services/autoReplyIntervalService.js')).default;
     const autoReplyConnectionManager = (await import('../services/autoReplyConnectionManager.js')).default;
     
-    if (intervalSeconds > 0) {
-      await autoReplyIntervalService.startIntervalCheck(accountId);
-      await autoReplyConnectionManager.disconnectAccount(accountId);
-    } else {
-      autoReplyIntervalService.stopIntervalCheck(accountId);
-      await autoReplyConnectionManager.keepAccountConnected(accountId);
-    }
+    // Stop any interval checking if it was running
+    autoReplyIntervalService.stopIntervalCheck(accountId);
+    // Ensure connection is maintained for real-time auto-reply
+    await autoReplyConnectionManager.keepAccountConnected(accountId);
     
     // Go back to auto-reply DM config
     await handleConfigAutoReplyDm(bot, callbackQuery);
   } else {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: result.error || 'Failed to set interval',
+      text: result.error || 'Failed to update settings',
       show_alert: true,
     });
   }
@@ -1908,33 +2006,31 @@ export async function handleAutoReplyIntervalInput(bot, msg, accountId) {
     return false;
   }
 
-  const result = await configService.setAutoReplyCheckInterval(accountId, intervalSeconds);
+  // Interval mode is disabled - always use real-time event-driven mode
+  // Store interval in DB for reference, but always use real-time handlers
+  const result = await configService.setAutoReplyCheckInterval(accountId, 0); // Force to 0 (real-time)
   
   if (result.success) {
-    const intervalText = intervalSeconds > 0 ? `${intervalSeconds} seconds` : 'Real-time';
     await bot.sendMessage(
       chatId,
-      `✅ Check interval set to ${intervalText}!`,
+      `✅ Auto-reply uses real-time mode (event-driven, no polling)!`,
       { parse_mode: 'HTML', ...createBackButton() }
     );
     
-    // Restart interval service if needed
+    // Always use real-time connection manager (no interval polling)
     const autoReplyIntervalService = (await import('../services/autoReplyIntervalService.js')).default;
     const autoReplyConnectionManager = (await import('../services/autoReplyConnectionManager.js')).default;
     
-    if (intervalSeconds > 0) {
-      await autoReplyIntervalService.startIntervalCheck(accountId);
-      await autoReplyConnectionManager.disconnectAccount(accountId);
-    } else {
-      autoReplyIntervalService.stopIntervalCheck(accountId);
-      await autoReplyConnectionManager.keepAccountConnected(accountId);
-    }
+    // Stop any interval checking if it was running
+    autoReplyIntervalService.stopIntervalCheck(accountId);
+    // Ensure connection is maintained for real-time auto-reply
+    await autoReplyConnectionManager.keepAccountConnected(accountId);
     
     return true;
   } else {
     await bot.sendMessage(
       chatId,
-      `❌ Failed to set interval: ${result.error}`,
+      `❌ Failed to update settings: ${result.error}`,
       { parse_mode: 'HTML', ...createBackButton() }
     );
     return false;

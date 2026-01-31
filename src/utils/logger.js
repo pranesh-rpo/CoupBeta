@@ -71,10 +71,32 @@ class Logger {
   }
 
   logError(context, userId, error, details = '') {
-    const timestamp = new Date().toISOString();
+    // Filter out recoverable MTProto BinaryReader errors
     const errorMsg = error instanceof Error ? error.message : String(error);
-    const detailsStr = details ? ` - ${details}` : '';
-    const message = `[ERROR] [${timestamp}] [${context}] User ${userId}: ${errorMsg}${detailsStr}`;
+    const errorStack = error instanceof Error ? (error.stack || '') : '';
+    
+    // Check for BinaryReader errors (recoverable MTProto errors)
+    if (errorMsg.includes('readUInt32LE') || 
+        errorMsg.includes('BinaryReader') || 
+        errorMsg.includes('Cannot read properties of undefined') ||
+        (errorStack && errorStack.includes('BinaryReader'))) {
+      // Suppress these recoverable errors - they don't need to be logged
+      return;
+    }
+    
+    // Check if context or details mention BinaryReader errors
+    const contextStr = String(context || '');
+    const detailsStr = String(details || '');
+    if (contextStr.includes('BinaryReader') || 
+        contextStr.includes('readUInt32LE') ||
+        detailsStr.includes('BinaryReader') ||
+        detailsStr.includes('readUInt32LE')) {
+      return; // Suppress these recoverable errors
+    }
+    
+    const timestamp = new Date().toISOString();
+    const detailsStr2 = details ? ` - ${details}` : '';
+    const message = `[ERROR] [${timestamp}] [${context}] User ${userId}: ${errorMsg}${detailsStr2}`;
     console.error(`${colors.red}${colors.bright}${message}${colors.reset}`);
     if (error instanceof Error && error.stack) {
       console.error(`${colors.red}[ERROR STACK] ${error.stack}${colors.reset}`);

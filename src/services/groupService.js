@@ -163,6 +163,7 @@ class GroupService {
       }
 
       console.log(`[GROUPS] Refreshed groups for account ${accountIdNum}: ${added} added, ${updated} updated, total: ${groups.length}`);
+      
       return { success: true, added, updated, total: groups.length };
     } catch (error) {
       logError(`[GROUPS ERROR] Error refreshing groups for account ${accountIdNum}:`, error);
@@ -221,6 +222,89 @@ class GroupService {
     } catch (error) {
       logError(`[GROUPS ERROR] Error updating last message time:`, error);
     }
+  }
+
+  /**
+   * Collect group invite links for all groups (returns links, doesn't store)
+   * @param {Object} client - Telegram client instance
+   * @param {number} accountId - Account ID
+   * @param {Array} groups - Array of group dialogs
+   * @param {boolean} silent - If true, suppress console logs (default: false)
+   * @returns {Promise<Array>} Array of unique group links
+   */
+  async collectGroupLinks(client, accountId, groups, silent = false) {
+    if (!client || !groups || groups.length === 0) {
+      return [];
+    }
+
+    const accountIdNum = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+    const links = new Set(); // Use Set to automatically handle duplicates
+    let collected = 0;
+    let skipped = 0;
+
+    for (const group of groups) {
+      try {
+        const groupId = group.entity.id.toString();
+        const groupTitle = group.name || 'Unknown';
+        let inviteLink = null;
+
+        // First, try username-based link (simplest and most reliable)
+        if (group.entity.username) {
+          inviteLink = `https://t.me/${group.entity.username}`;
+        } else {
+          // For groups without username, try to get/create invite link
+          try {
+            // Try to export a new invite link
+            const exportedInvite = await client.invoke(
+              new Api.messages.ExportChatInvite({
+                peer: group.entity,
+                legacyRevokePermanent: false
+              })
+            );
+
+            if (exportedInvite && exportedInvite.link) {
+              inviteLink = exportedInvite.link;
+            }
+          } catch (exportError) {
+            // If export fails, try to get existing invite links
+            try {
+              const me = await client.getMe();
+              const chatInvites = await client.invoke(
+                new Api.messages.GetExportedChatInvites({
+                  peer: group.entity,
+                  adminId: me,
+                  limit: 1
+                })
+              );
+
+              if (chatInvites && chatInvites.invites && chatInvites.invites.length > 0) {
+                inviteLink = chatInvites.invites[0].link;
+              }
+            } catch (getInvitesError) {
+              // If we can't get invites, skip this group silently
+              skipped++;
+              continue;
+            }
+          }
+        }
+
+        // Add the link if we found one (Set automatically handles duplicates)
+        if (inviteLink) {
+          links.add(inviteLink);
+          collected++;
+        } else {
+          skipped++;
+        }
+      } catch (error) {
+        // Silently skip errors for individual groups
+        skipped++;
+      }
+    }
+
+    if (!silent) {
+      console.log(`[GROUP LINKS] Collected ${collected} links from ${groups.length} groups for account ${accountIdNum} (${skipped} skipped)`);
+    }
+    return Array.from(links); // Return as array
   }
 
 }
