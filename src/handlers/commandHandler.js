@@ -1213,9 +1213,12 @@ export async function handleMessagesMenu(bot, callbackQuery) {
   const settings = await configService.getAccountSettings(accountId);
   const usePool = settings?.useMessagePool || false;
 
+  // Handle both object format {text, entities} and string format for backward compatibility
+  const messageText = currentMessage ? (typeof currentMessage === 'string' ? currentMessage : currentMessage.text) : null;
+
   let menuMessage = `💬 <b>Messages</b>\n\n`;
   menuMessage += `Manage your broadcast messages and message pool.\n\n`;
-  menuMessage += `✍️ <b>Current Message:</b> ${currentMessage ? `"${escapeHtml(currentMessage.substring(0, 50))}${currentMessage.length > 50 ? '...' : ''}"` : 'Not set'}\n`;
+  menuMessage += `✍️ <b>Current Message:</b> ${messageText ? `"${escapeHtml(messageText.substring(0, 50))}${messageText.length > 50 ? '...' : ''}"` : 'Not set'}\n`;
   menuMessage += `🎲 <b>Message Pool:</b> ${pool.length} messages ${usePool ? '(Enabled)' : '(Disabled)'}\n\n`;
   menuMessage += `Select an option below:`;
 
