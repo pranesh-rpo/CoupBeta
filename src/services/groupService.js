@@ -179,17 +179,10 @@ class GroupService {
       }
       
       return { success: false, error: errorMessage };
-    } finally {
-      // Disconnect client after refreshing groups
-      if (client && client.connected) {
-        try {
-          await client.disconnect();
-          console.log(`[GROUPS] Disconnected client for account ${accountIdNum} after refreshing groups`);
-        } catch (disconnectError) {
-          logError(`[GROUPS ERROR] Error disconnecting client:`, disconnectError);
-        }
-      }
     }
+    // NOTE: Client is NOT disconnected here - connection management is handled by
+    // autoReplyConnectionManager and accountLinker. Disconnecting here would break
+    // auto-reply and other services that depend on persistent connections.
   }
 
   async markGroupInactive(accountId, groupId) {

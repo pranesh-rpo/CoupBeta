@@ -54,7 +54,11 @@ export const config = {
     .map(x => parseInt(x))
     .filter(x => !isNaN(x)), // Remove NaN values from invalid entries
   adminBotToken: process.env.ADMIN_BOT_TOKEN,
-  adminChatIds: (process.env.ADMIN_CHAT_IDS || '').split(',').filter(x => x).map(x => parseInt(x)),
+  adminChatIds: (process.env.ADMIN_CHAT_IDS || '')
+    .split(',')
+    .filter(x => x)
+    .map(x => parseInt(x))
+    .filter(x => !isNaN(x)), // Remove NaN values from invalid entries
   
   // Main Account (the account used to create the bot and APIs)
   // This account should never be deleted or marked for re-authentication

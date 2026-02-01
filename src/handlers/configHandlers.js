@@ -199,23 +199,52 @@ export async function handleConfigCustomInterval(bot, callbackQuery) {
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId }; // Return accountId for pending state
+  return { accountId, messageId: callbackQuery.message.message_id }; // Return accountId and messageId for pending state
+}
+
+/**
+ * Helper to create back to interval button
+ */
+function createBackToIntervalButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Interval', callback_data: 'btn_config_interval_menu' }],
+      ],
+    },
+  };
 }
 
 /**
  * Handle custom interval input
  */
-export async function handleCustomIntervalInput(bot, msg, accountId) {
+export async function handleCustomIntervalInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const text = msg.text?.trim();
   
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!text) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `⏱️ <b>Broadcast Interval</b>\n\nPlease enter the interval in minutes (minimum: 11 minutes).\n\nExample: 15, 30, 60\n\nSend your interval now:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     return false; // Keep pending state
   }
@@ -224,10 +253,9 @@ export async function handleCustomIntervalInput(bot, msg, accountId) {
   const intervalMinutes = parseInt(text, 10);
   
   if (isNaN(intervalMinutes) || intervalMinutes < 11) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Invalid interval. Please enter a number that is at least 11 minutes.\n\nExample: 15, 30, 60\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     console.log(`[CUSTOM_INTERVAL] User ${userId} entered invalid interval: ${text}`);
     return false; // Keep pending state so user can retry
@@ -236,10 +264,9 @@ export async function handleCustomIntervalInput(bot, msg, accountId) {
   // Validate maximum (reasonable limit, e.g., 1440 minutes = 24 hours)
   const maxIntervalMinutes = 1440;
   if (intervalMinutes > maxIntervalMinutes) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Interval too large. Maximum is ${maxIntervalMinutes} minutes (24 hours).\n\nPlease enter a smaller value:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     console.log(`[CUSTOM_INTERVAL] User ${userId} entered interval too large: ${intervalMinutes} minutes`);
     return false; // Keep pending state so user can retry
@@ -249,20 +276,18 @@ export async function handleCustomIntervalInput(bot, msg, accountId) {
   const result = await configService.setCustomInterval(accountId, intervalMinutes);
   
   if (result.success) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `✅ <b>Broadcast Interval Set!</b>\n\n⏱️ <b>Interval:</b> ${intervalMinutes} minutes\n\nYour broadcasts will run every ${intervalMinutes} minutes.\n\nNote: If a broadcast is currently running, the new interval will take effect on the next cycle.`,
       { parse_mode: 'HTML', ...createIntervalMenu() }
     );
     console.log(`[CUSTOM_INTERVAL] User ${userId} successfully set interval to ${intervalMinutes} minutes`);
     return true; // Success - clear pending state
   } else {
-     let errorMessage = `❌ <b>Failed to Set Broadcast Interval</b>\n\n<b>Error:</b> ${result.error}\n\n`;
+    const errorMessage = `❌ <b>Failed to Set Broadcast Interval</b>\n\n<b>Error:</b> ${result.error}\n\n`;
     
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       errorMessage,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     console.log(`[CUSTOM_INTERVAL] User ${userId} failed to set interval: ${result.error}`);
     return false; // Keep pending state so user can retry
@@ -310,27 +335,43 @@ export async function handleConfigGroupDelay(bot, callbackQuery) {
     chatId,
     callbackQuery.message.message_id,
     delayMessage,
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToIntervalButton() }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId }; // Return accountId for pending state
+  return { accountId, messageId: callbackQuery.message.message_id }; // Return accountId and messageId for pending state
 }
 
 /**
  * Handle group delay input
  */
-export async function handleGroupDelayInput(bot, msg, accountId) {
+export async function handleGroupDelayInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const text = msg.text?.trim().toLowerCase();
   
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!text) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `⏳ <b>Group Delay Configuration</b>\n\nPlease enter the delay range in format: <code>min-max</code>\n\nExamples:\n• <code>5-10</code> for 5 to 10 seconds\n• <code>default</code> to use default\n\nSend your delay range now:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     return false; // Keep pending state
   }
@@ -340,18 +381,16 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
     const result = await configService.setGroupDelay(accountId, null, null);
     
     if (result.success) {
-      await bot.sendMessage(
-        chatId,
+      await editOrSend(
         `✅ <b>Group Delay Reset to Default</b>\n\n⏳ Using default delay: 5-10 seconds`,
         { parse_mode: 'HTML', ...createIntervalMenu() }
       );
       logger.logChange('CONFIG', userId, 'Group delay reset to default');
       return true; // Success - clear pending state
     } else {
-      await bot.sendMessage(
-        chatId,
+      await editOrSend(
         `❌ <b>Failed to Reset Delay</b>\n\n<b>Error:</b> ${result.error}\n\nTry again:`,
-        { parse_mode: 'HTML', ...createBackButton() }
+        { parse_mode: 'HTML', ...createBackToIntervalButton() }
       );
       return false; // Keep pending state
     }
@@ -360,10 +399,9 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
   // Parse delay range (format: min-max)
   const rangeMatch = text.match(/^(\d+)-(\d+)$/);
   if (!rangeMatch) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Invalid format. Please use format: <code>min-max</code>\n\nExamples:\n• <code>5-10</code> for 5 to 10 seconds\n• <code>3-7</code> for 3 to 7 seconds\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     return false; // Keep pending state
   }
@@ -372,28 +410,25 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
   const maxSeconds = parseInt(rangeMatch[2], 10);
 
   if (isNaN(minSeconds) || isNaN(maxSeconds) || minSeconds < 1 || maxSeconds < 1) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Invalid values. Minimum and maximum must be at least 1 second.\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     return false; // Keep pending state
   }
 
   if (minSeconds > maxSeconds) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Invalid range. Minimum (${minSeconds}) cannot be greater than maximum (${maxSeconds}).\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     return false; // Keep pending state
   }
 
   if (minSeconds > 300 || maxSeconds > 300) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Values too large. Maximum delay is 300 seconds (5 minutes).\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     return false; // Keep pending state
   }
@@ -402,18 +437,16 @@ export async function handleGroupDelayInput(bot, msg, accountId) {
   const result = await configService.setGroupDelay(accountId, minSeconds, maxSeconds);
   
   if (result.success) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `✅ <b>Group Delay Set Successfully!</b>\n\n⏳ <b>Delay Range:</b> ${minSeconds}-${maxSeconds} seconds\n\nMessages will wait a random delay between ${minSeconds} and ${maxSeconds} seconds before sending to the next group.`,
       { parse_mode: 'HTML', ...createIntervalMenu() }
     );
     console.log(`[GROUP_DELAY] User ${userId} successfully set delay to ${minSeconds}-${maxSeconds} seconds`);
     return true; // Success - clear pending state
   } else {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ <b>Failed to Set Delay</b>\n\n<b>Error:</b> ${result.error}\n\nTry again:`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToIntervalButton() }
     );
     console.log(`[GROUP_DELAY] User ${userId} failed to set delay: ${result.error}`);
     return false; // Keep pending state
@@ -560,6 +593,32 @@ export async function handleConfigQuietHours(bot, callbackQuery) {
   await safeAnswerCallback(bot, callbackQuery.id);
 }
 
+/**
+ * Helper to create back to config button
+ */
+function createBackToConfigButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Settings', callback_data: 'btn_config' }],
+      ],
+    },
+  };
+}
+
+/**
+ * Helper to create back to quiet hours button
+ */
+function createBackToQuietHoursButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Quiet Hours', callback_data: 'btn_config_quiet_hours' }],
+      ],
+    },
+  };
+}
+
 export async function handleQuietHoursSet(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
   const chatId = callbackQuery.message.chat.id;
@@ -588,11 +647,11 @@ export async function handleQuietHoursSet(bot, callbackQuery) {
     `Times are in IST (Indian Standard Time).\n` +
     `Use 24-hour format.\n\n` +
     `During quiet hours, broadcasting will be paused.`,
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToQuietHoursButton() }
   );
 
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId, type: 'quiet_hours' };
+  return { accountId, messageId: callbackQuery.message.message_id };
 }
 
 export async function handleQuietHoursView(bot, callbackQuery) {
@@ -665,17 +724,33 @@ export async function handleQuietHoursClear(bot, callbackQuery) {
   }
 }
 
-export async function handleQuietHoursInput(bot, msg, accountId) {
+export async function handleQuietHoursInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const text = msg.text?.trim();
   
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!text) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       'Please send the quiet hours in format: <code>HH:MM - HH:MM</code>\n\nExample: <code>22:00 - 06:00</code>',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToQuietHoursButton() }
     );
     return;
   }
@@ -685,12 +760,11 @@ export async function handleQuietHoursInput(bot, msg, accountId) {
   const match = text.match(quietHoursRegex);
   
   if (!match) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Invalid format. Please use: <code>HH:MM - HH:MM</code>\n\n' +
       'Example: <code>22:00 - 06:00</code> (10 PM to 6 AM)\n' +
       'Example: <code>09:00 - 17:00</code> (9 AM to 5 PM)',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToQuietHoursButton() }
     );
     return;
   }
@@ -698,10 +772,9 @@ export async function handleQuietHoursInput(bot, msg, accountId) {
   // Extract full time strings from the input (match[1] and match[2] are just hours, need full time)
   const times = text.split(/\s*-\s*/);
   if (times.length !== 2) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Invalid format. Please use: <code>HH:MM - HH:MM</code>\n\nExample: <code>22:00 - 06:00</code>',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToQuietHoursButton() }
     );
     return;
   }
@@ -714,27 +787,24 @@ export async function handleQuietHoursInput(bot, msg, accountId) {
     
     if (result.success) {
       logger.logSuccess('CONFIG', userId, `Quiet hours set: ${startTime} - ${endTime} IST`);
-      await bot.sendMessage(
-        chatId,
+      await editOrSend(
         `✅ <b>Quiet Hours Set Successfully!</b>\n\n` +
         `🌙 <b>Time Window:</b> ${startTime} - ${endTime} IST\n` +
         `📊 <b>Status:</b> Active\n\n` +
         `💡 Broadcasting will be automatically paused during these hours.`,
-        { parse_mode: 'HTML', ...createMainMenu() }
+        { parse_mode: 'HTML', ...createQuietHoursKeyboard() }
       );
     } else {
-      await bot.sendMessage(
-        chatId,
+      await editOrSend(
         `❌ Error: ${result.error || 'Failed to set quiet hours'}\n\nPlease try again.`,
-        { parse_mode: 'HTML', ...createBackButton() }
+        { parse_mode: 'HTML', ...createBackToQuietHoursButton() }
       );
     }
   } catch (error) {
     logger.logError('CONFIG', userId, error, 'Failed to handle quiet hours input');
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ An unexpected error occurred: ${error.message}\n\nPlease try again.`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToQuietHoursButton() }
     );
   }
 }
@@ -1016,6 +1086,19 @@ export async function handleConfigSchedule(bot, callbackQuery) {
   await safeAnswerCallback(bot, callbackQuery.id);
 }
 
+/**
+ * Helper to create back to schedule button
+ */
+function createBackToScheduleButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Schedule', callback_data: 'btn_config_schedule' }],
+      ],
+    },
+  };
+}
+
 export async function handleScheduleSet(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
   const chatId = callbackQuery.message.chat.id;
@@ -1043,11 +1126,11 @@ export async function handleScheduleSet(bot, callbackQuery) {
     `Example: <code>22:00 - 06:00</code> (10 PM to 6 AM, spans midnight)\n\n` +
     `Times are in IST (Indian Standard Time).\n` +
     `Use 24-hour format.`,
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToScheduleButton() }
   );
 
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId, type: 'schedule' };
+  return { accountId, messageId: callbackQuery.message.message_id };
 }
 
 export async function handleScheduleView(bot, callbackQuery) {
@@ -1130,17 +1213,33 @@ export async function handleScheduleClear(bot, callbackQuery) {
   }
 }
 
-export async function handleScheduleInput(bot, msg, accountId) {
+export async function handleScheduleInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const text = msg.text?.trim();
   
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!text) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       'Please send the schedule in format: <code>HH:MM - HH:MM</code>\n\nExample: <code>09:00 - 17:00</code>',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToScheduleButton() }
     );
     return;
   }
@@ -1150,12 +1249,11 @@ export async function handleScheduleInput(bot, msg, accountId) {
   const match = text.match(scheduleRegex);
   
   if (!match) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Invalid format. Please use: <code>HH:MM - HH:MM</code>\n\n' +
       'Example: <code>09:00 - 17:00</code> (9 AM to 5 PM)\n' +
       'Example: <code>22:00 - 06:00</code> (10 PM to 6 AM)',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToScheduleButton() }
     );
     return;
   }
@@ -1163,10 +1261,9 @@ export async function handleScheduleInput(bot, msg, accountId) {
   // Extract full time strings from the input (match[1] and match[2] are just hours, need full time)
   const times = text.split(/\s*-\s*/);
   if (times.length !== 2) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Invalid format. Please use: <code>HH:MM - HH:MM</code>\n\nExample: <code>09:00 - 17:00</code>',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToScheduleButton() }
     );
     return;
   }
@@ -1179,27 +1276,24 @@ export async function handleScheduleInput(bot, msg, accountId) {
     
     if (result.success) {
       logger.logSuccess('CONFIG', userId, `Schedule set: ${startTime} - ${endTime} IST`);
-      await bot.sendMessage(
-        chatId,
+      await editOrSend(
         `✅ <b>Schedule Set Successfully!</b>\n\n` +
         `⏰ <b>Time Window:</b> ${startTime} - ${endTime} IST\n` +
         `📊 <b>Status:</b> Active\n\n` +
         `💡 Broadcasting will only occur during this time window. You can start broadcasts anytime, but messages will only be sent during the schedule.`,
-        { parse_mode: 'HTML', ...createMainMenu() }
+        { parse_mode: 'HTML', ...createScheduleKeyboard() }
       );
     } else {
-      await bot.sendMessage(
-        chatId,
+      await editOrSend(
         `❌ Error: ${result.error || 'Failed to set schedule'}\n\nPlease try again.`,
-        { parse_mode: 'HTML', ...createBackButton() }
+        { parse_mode: 'HTML', ...createBackToScheduleButton() }
       );
     }
   } catch (error) {
     logger.logError('CONFIG', userId, error, 'Failed to handle schedule input');
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ An unexpected error occurred: ${error.message}\n\nPlease try again.`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToScheduleButton() }
     );
   }
 }
@@ -1272,26 +1366,45 @@ export async function handleBlacklistSearch(bot, callbackQuery) {
     chatId,
     callbackQuery.message.message_id,
     '🔍 <b>Search Groups</b>\n\nEnter a keyword to search for groups:',
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🔙 Back to Blacklist', callback_data: 'btn_config_blacklist' }]] } }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId };
+  return { accountId, messageId: callbackQuery.message.message_id };
 }
 
 /**
  * Handle blacklist search input
  */
-export async function handleBlacklistSearchInput(bot, msg, accountId) {
+export async function handleBlacklistSearchInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const keyword = msg.text?.trim();
+  
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
+  const backButton = { reply_markup: { inline_keyboard: [[{ text: '🔙 Back to Blacklist', callback_data: 'btn_config_blacklist' }]] } };
+  
   if (!keyword || keyword.length < 2) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Please enter at least 2 characters to search.',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...backButton }
     );
     return false;
   }
@@ -1299,10 +1412,9 @@ export async function handleBlacklistSearchInput(bot, msg, accountId) {
   const result = await groupBlacklistService.searchGroups(accountId, keyword);
   
   if (!result.success || result.groups.length === 0) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ No groups found matching "${keyword}"\n\nTry a different keyword.`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...backButton }
     );
     return false;
   }
@@ -1320,8 +1432,7 @@ export async function handleBlacklistSearchInput(bot, msg, accountId) {
     ]),
   };
 
-  await bot.sendMessage(
-    chatId,
+  await editOrSend(
     `🔍 <b>Search Results</b>\n\nFound <b>${groups.length}</b> group(s) matching "${keyword}":\n\nSelect a group to add to blacklist:`,
     { parse_mode: 'HTML', reply_markup: keyboard }
   );
@@ -1544,6 +1655,19 @@ export async function handleAutoReplyDmToggle(bot, callbackQuery, enabled) {
 }
 
 /**
+ * Helper to create back to auto reply DM button
+ */
+function createBackToAutoReplyDmButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Auto Reply DM', callback_data: 'btn_config_auto_reply_dm' }],
+      ],
+    },
+  };
+}
+
+/**
  * Handle auto reply DM set message
  */
 export async function handleAutoReplyDmSetMessage(bot, callbackQuery) {
@@ -1564,26 +1688,43 @@ export async function handleAutoReplyDmSetMessage(bot, callbackQuery) {
     chatId,
     callbackQuery.message.message_id,
     '💬 <b>Set Auto Reply DM Message</b>\n\nSend the message to use for auto replies to direct messages:',
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToAutoReplyDmButton() }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId };
+  return { accountId, messageId: callbackQuery.message.message_id };
 }
 
 /**
  * Handle auto reply DM message input
  */
-export async function handleAutoReplyDmMessageInput(bot, msg, accountId) {
+export async function handleAutoReplyDmMessageInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const message = msg.text?.trim();
+  
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!message) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Please send a valid message.',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyDmButton() }
     );
     return false;
   }
@@ -1598,17 +1739,15 @@ export async function handleAutoReplyDmMessageInput(bot, msg, accountId) {
     const autoReplyConnectionManager = (await import('../services/autoReplyConnectionManager.js')).default;
     await autoReplyConnectionManager.keepAccountConnected(accountId);
     
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '✅ Auto reply DM message set successfully!',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createAutoReplyMenu() }
     );
     return true;
   } else {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Failed to set message: ${result.error}`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyDmButton() }
     );
     return false;
   }
@@ -1753,6 +1892,19 @@ export async function handleAutoReplyGroupsToggle(bot, callbackQuery, enabled) {
 }
 
 /**
+ * Helper to create back to auto reply groups button
+ */
+function createBackToAutoReplyGroupsButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Auto Reply Groups', callback_data: 'btn_config_auto_reply_groups' }],
+      ],
+    },
+  };
+}
+
+/**
  * Handle auto reply groups set message
  */
 export async function handleAutoReplyGroupsSetMessage(bot, callbackQuery) {
@@ -1773,26 +1925,43 @@ export async function handleAutoReplyGroupsSetMessage(bot, callbackQuery) {
     chatId,
     callbackQuery.message.message_id,
     '💬 <b>Set Auto Reply Groups Message</b>\n\nSend the message to use for auto replies in groups:',
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToAutoReplyGroupsButton() }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId };
+  return { accountId, messageId: callbackQuery.message.message_id };
 }
 
 /**
  * Handle auto reply groups message input
  */
-export async function handleAutoReplyGroupsMessageInput(bot, msg, accountId) {
+export async function handleAutoReplyGroupsMessageInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const message = msg.text?.trim();
+  
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!message) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Please send a valid message.',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyGroupsButton() }
     );
     return false;
   }
@@ -1807,17 +1976,15 @@ export async function handleAutoReplyGroupsMessageInput(bot, msg, accountId) {
     const autoReplyConnectionManager = (await import('../services/autoReplyConnectionManager.js')).default;
     await autoReplyConnectionManager.keepAccountConnected(accountId);
     
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '✅ Auto reply groups message set successfully!',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createAutoReplyMenu() }
     );
     return true;
   } else {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Failed to set message: ${result.error}`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyGroupsButton() }
     );
     return false;
   }
@@ -1919,6 +2086,19 @@ export async function handleAutoReplyIntervalSelect(bot, callbackQuery, interval
 }
 
 /**
+ * Helper to create back to auto reply interval button
+ */
+function createBackToAutoReplyIntervalButton() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Auto Reply Interval', callback_data: 'auto_reply_set_interval' }],
+      ],
+    },
+  };
+}
+
+/**
  * Handle auto reply interval custom input
  */
 export async function handleAutoReplyIntervalCustom(bot, callbackQuery) {
@@ -1939,45 +2119,60 @@ export async function handleAutoReplyIntervalCustom(bot, callbackQuery) {
     chatId,
     callbackQuery.message.message_id,
     '⏱️ <b>Custom Check Interval</b>\n\nSend the interval in seconds (0 for real-time, minimum 10 seconds):\n\nExample: <code>30</code> for 30 seconds',
-    { parse_mode: 'HTML', ...createBackButton() }
+    { parse_mode: 'HTML', ...createBackToAutoReplyIntervalButton() }
   );
   
   await safeAnswerCallback(bot, callbackQuery.id);
-  return { accountId };
+  return { accountId, messageId: callbackQuery.message.message_id };
 }
 
 /**
  * Handle auto reply interval custom input
  */
-export async function handleAutoReplyIntervalInput(bot, msg, accountId) {
+export async function handleAutoReplyIntervalInput(bot, msg, accountId, messageId = null) {
   const userId = msg.from.id;
   const chatId = msg.chat.id;
 
+  // Delete user's input message
+  try {
+    await bot.deleteMessage(chatId, msg.message_id);
+  } catch (e) { /* Ignore deletion errors */ }
+
   const intervalText = msg.text?.trim();
+  
+  // Helper to edit or send message
+  const editOrSend = async (content, options) => {
+    if (messageId) {
+      try {
+        await safeEditMessage(bot, chatId, messageId, content, options);
+        return;
+      } catch (e) { /* Fall back to send */ }
+    }
+    const sent = await bot.sendMessage(chatId, content, options);
+    return sent.message_id;
+  };
+  
   if (!intervalText) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Please send a valid number.',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyIntervalButton() }
     );
     return false;
   }
 
   const intervalSeconds = parseInt(intervalText);
   if (isNaN(intervalSeconds) || intervalSeconds < 0) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Invalid interval. Please send a number (0 for real-time, minimum 10 for interval mode).',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyIntervalButton() }
     );
     return false;
   }
 
   if (intervalSeconds > 0 && intervalSeconds < 10) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       '❌ Minimum interval is 10 seconds.',
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyIntervalButton() }
     );
     return false;
   }
@@ -1987,10 +2182,9 @@ export async function handleAutoReplyIntervalInput(bot, msg, accountId) {
   const result = await configService.setAutoReplyCheckInterval(accountId, 0); // Force to 0 (real-time)
   
   if (result.success) {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `✅ Auto-reply uses real-time mode (event-driven, no polling)!`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createAutoReplyMenu() }
     );
     
     // Always use real-time connection manager (no interval polling)
@@ -2004,10 +2198,9 @@ export async function handleAutoReplyIntervalInput(bot, msg, accountId) {
     
     return true;
   } else {
-    await bot.sendMessage(
-      chatId,
+    await editOrSend(
       `❌ Failed to update settings: ${result.error}`,
-      { parse_mode: 'HTML', ...createBackButton() }
+      { parse_mode: 'HTML', ...createBackToAutoReplyIntervalButton() }
     );
     return false;
   }

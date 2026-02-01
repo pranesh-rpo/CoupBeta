@@ -251,6 +251,7 @@ import {
   handleLoginCancel,
   handleCheckPaymentStatus,
   handleForwardToSavedButton,
+  handleGoToSavedMessages,
   handleCheckSavedMessages,
   handleShowSavedInstructions,
   handleLoggerBotButton,
@@ -679,14 +680,29 @@ console.log('🤖 Bot is running with polling...');
 const pendingPhoneNumbers = new Set();
 const pendingStartMessages = new Set();
 const pendingPasswords = new Set();
-const pendingQuietHoursInputs = new Map(); // userId -> { accountId, type: 'start' | 'end' }
-const pendingScheduleInputs = new Map(); // userId -> { accountId, type: 'schedule' }
-const pendingCustomIntervalInputs = new Map(); // userId -> { accountId }
-const pendingGroupDelayInputs = new Map(); // userId -> { accountId }
-const pendingBlacklistSearchInputs = new Map(); // userId -> { accountId }
-const pendingAutoReplyDmMessageInputs = new Map(); // userId -> { accountId }
-const pendingAutoReplyGroupsMessageInputs = new Map(); // userId -> { accountId }
-const pendingAutoReplyIntervalInputs = new Map(); // userId -> { accountId }
+const pendingQuietHoursInputs = new Map(); // userId -> { accountId, messageId }
+const pendingScheduleInputs = new Map(); // userId -> { accountId, messageId }
+const pendingCustomIntervalInputs = new Map(); // userId -> { accountId, messageId }
+const pendingGroupDelayInputs = new Map(); // userId -> { accountId, messageId }
+const pendingBlacklistSearchInputs = new Map(); // userId -> { accountId, messageId }
+const pendingAutoReplyDmMessageInputs = new Map(); // userId -> { accountId, messageId }
+const pendingAutoReplyGroupsMessageInputs = new Map(); // userId -> { accountId, messageId }
+const pendingAutoReplyIntervalInputs = new Map(); // userId -> { accountId, messageId }
+
+/**
+ * Safely delete a message (user's input message)
+ * Returns true if successful, false otherwise
+ */
+async function safeDeleteMessage(chatId, messageId) {
+  try {
+    await bot.deleteMessage(chatId, messageId);
+    return true;
+  } catch (error) {
+    // Ignore errors (message might be too old or already deleted)
+    console.log(`[DELETE_MSG] Could not delete message ${messageId}: ${error.message}`);
+    return false;
+  }
+}
 
 /**
  * Clear all conflicting pending states for a user
@@ -1622,9 +1638,9 @@ bot.on('message', async (msg) => {
       console.log(`[MESSAGE HANDLER] Invalid pending quiet hours state for user ${userId}, cleared`);
       return;
     }
-    const { accountId } = pendingData;
+    const { accountId, messageId } = pendingData;
     pendingQuietHoursInputs.delete(userId);
-    await handleQuietHoursInput(bot, msg, accountId);
+    await handleQuietHoursInput(bot, msg, accountId, messageId);
   } else if (pendingScheduleInputs.has(userId)) {
     const pendingData = pendingScheduleInputs.get(userId);
     if (!pendingData || !pendingData.accountId) {
@@ -1633,9 +1649,9 @@ bot.on('message', async (msg) => {
       console.log(`[MESSAGE HANDLER] Invalid pending schedule state for user ${userId}, cleared`);
       return;
     }
-    const { accountId } = pendingData;
+    const { accountId, messageId } = pendingData;
     pendingScheduleInputs.delete(userId);
-    await handleScheduleInput(bot, msg, accountId);
+    await handleScheduleInput(bot, msg, accountId, messageId);
   } else if (pendingBlacklistSearchInputs.has(userId)) {
     // Check blacklist search BEFORE other input handlers to prevent conflicts
     const pendingData = pendingBlacklistSearchInputs.get(userId);
@@ -1644,9 +1660,9 @@ bot.on('message', async (msg) => {
       pendingBlacklistSearchInputs.delete(userId);
       return;
     }
-    const accountId = pendingData.accountId;
+    const { accountId, messageId } = pendingData;
     try {
-      const result = await handleBlacklistSearchInput(bot, msg, accountId);
+      const result = await handleBlacklistSearchInput(bot, msg, accountId, messageId);
       if (result) {
         pendingBlacklistSearchInputs.delete(userId);
       }
@@ -1661,8 +1677,8 @@ bot.on('message', async (msg) => {
       pendingGroupDelayInputs.delete(userId);
       return;
     }
-    const accountId = pendingData.accountId;
-    const result = await handleGroupDelayInput(bot, msg, accountId);
+    const { accountId, messageId } = pendingData;
+    const result = await handleGroupDelayInput(bot, msg, accountId, messageId);
     if (result) {
       pendingGroupDelayInputs.delete(userId);
     }
@@ -1674,8 +1690,8 @@ bot.on('message', async (msg) => {
       console.log(`[MESSAGE HANDLER] Invalid pending custom interval state for user ${userId}, cleared`);
       return;
     }
-    const { accountId } = pendingData;
-    const result = await handleCustomIntervalInput(bot, msg, accountId);
+    const { accountId, messageId } = pendingData;
+    const result = await handleCustomIntervalInput(bot, msg, accountId, messageId);
     if (result === true) {
       pendingCustomIntervalInputs.delete(userId);
       logger.logChange('CUSTOM_INTERVAL', userId, 'Custom interval input completed');
@@ -1688,8 +1704,8 @@ bot.on('message', async (msg) => {
       pendingAutoReplyDmMessageInputs.delete(userId);
       return;
     }
-    const accountId = pendingData.accountId;
-    const result = await handleAutoReplyDmMessageInput(bot, msg, accountId);
+    const { accountId, messageId } = pendingData;
+    const result = await handleAutoReplyDmMessageInput(bot, msg, accountId, messageId);
     if (result) {
       pendingAutoReplyDmMessageInputs.delete(userId);
     }
@@ -1699,8 +1715,8 @@ bot.on('message', async (msg) => {
       pendingAutoReplyGroupsMessageInputs.delete(userId);
       return;
     }
-    const accountId = pendingData.accountId;
-    const result = await handleAutoReplyGroupsMessageInput(bot, msg, accountId);
+    const { accountId, messageId } = pendingData;
+    const result = await handleAutoReplyGroupsMessageInput(bot, msg, accountId, messageId);
     if (result) {
       pendingAutoReplyGroupsMessageInputs.delete(userId);
     }
@@ -1710,8 +1726,8 @@ bot.on('message', async (msg) => {
       pendingAutoReplyIntervalInputs.delete(userId);
       return;
     }
-    const accountId = pendingData.accountId;
-    const result = await handleAutoReplyIntervalInput(bot, msg, accountId);
+    const { accountId, messageId } = pendingData;
+    const result = await handleAutoReplyIntervalInput(bot, msg, accountId, messageId);
     if (result) {
       pendingAutoReplyIntervalInputs.delete(userId);
     }
@@ -1977,6 +1993,8 @@ bot.on('callback_query', async (callbackQuery) => {
       await handleConfigMentionCount(bot, callbackQuery, count);
     } else if (data === 'btn_forward_to_saved') {
       await handleForwardToSavedButton(bot, callbackQuery);
+    } else if (data === 'btn_go_to_saved_messages') {
+      await handleGoToSavedMessages(bot, callbackQuery);
     } else if (data === 'btn_check_saved_messages') {
       await handleCheckSavedMessages(bot, callbackQuery);
     } else if (data === 'btn_show_saved_instructions') {

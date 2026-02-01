@@ -8,6 +8,7 @@ import broadcastStatsService from './broadcastStatsService.js';
 import analyticsService from './analyticsService.js';
 import notificationService from './notificationService.js';
 import mentionService from './mentionService.js';
+import savedTemplatesService from './savedTemplatesService.js';
 import db from '../database/db.js';
 import { config } from '../config.js';
 import { logError } from '../utils/logger.js';
@@ -960,19 +961,42 @@ class AutomationService {
       }
 
       // Schedule next cycle IMMEDIATELY (before sending messages)
+      // CRITICAL: Wrap timeout callback in try-catch to ensure errors don't prevent next cycle
       const timeoutId = setTimeout(async () => {
-        // Double-check broadcast is still running
-        const currentBroadcast = this.activeBroadcasts.get(broadcastKey);
-        if (!currentBroadcast || !currentBroadcast.isRunning) {
-          console.log(`[BROADCAST] Broadcast stopped before cycle could run for account ${accountId}`);
-          return;
+        try {
+          // Double-check broadcast is still running
+          const currentBroadcast = this.activeBroadcasts.get(broadcastKey);
+          if (!currentBroadcast || !currentBroadcast.isRunning) {
+            console.log(`[BROADCAST] Broadcast stopped before cycle could run for account ${accountId}`);
+            return;
+          }
+          
+          console.log(`[BROADCAST] Next cycle triggered for account ${accountId} (user ${userId}) after ${customIntervalMinutes} minutes`);
+          await this.sendAndScheduleNextCycle(userId, accountId);
+        } catch (timeoutError) {
+          // CRITICAL: Catch any errors in timeout callback to prevent unhandled rejections
+          logError(`[BROADCAST ERROR] Error in timeout callback for account ${accountId}:`, timeoutError);
+          console.log(`[BROADCAST] Error in cycle timeout callback: ${timeoutError?.message || 'Unknown error'}`);
+          
+          // Try to reschedule next cycle even on error
+          const errorBroadcast = this.activeBroadcasts.get(broadcastKey);
+          if (errorBroadcast && errorBroadcast.isRunning) {
+            try {
+              const retryIntervalMs = await this.getCustomInterval(accountId);
+              const retryTimeoutId = setTimeout(async () => {
+                await this.sendAndScheduleNextCycle(userId, accountId);
+              }, retryIntervalMs);
+              errorBroadcast.timeouts = [retryTimeoutId];
+              this.activeBroadcasts.set(broadcastKey, errorBroadcast);
+              console.log(`[BROADCAST] Rescheduled next cycle after error in ${retryIntervalMs / (60 * 1000)} minutes`);
+            } catch (rescheduleError) {
+              logError(`[BROADCAST ERROR] Failed to reschedule after timeout error:`, rescheduleError);
+            }
+          }
         }
-        
-        console.log(`[BROADCAST] Next cycle triggered for account ${accountId} (user ${userId}) after ${customIntervalMinutes} minutes`);
-        await this.sendAndScheduleNextCycle(userId, accountId);
       }, customIntervalMs);
       
-      // Update broadcast with new timeout immediately
+      // Update broadcast with new timeout immediately (CRITICAL: Must be done before any async operations)
       stillRunning.timeouts = [timeoutId];
       stillRunning.customIntervalMs = customIntervalMs;
       this.activeBroadcasts.set(broadcastKey, stillRunning);
@@ -1009,6 +1033,7 @@ class AutomationService {
       const savedTemplateSlot = settings?.savedTemplateSlot;
       let messageToSend = null;
       let storedEntities = null;
+      let forwardMessageId = null; // Declare forwardMessageId for saved template forwarding
       
       console.log(`[BROADCAST] Cycle check - forward mode: ${useForwardMode}, forward message ID: ${forwardMessageId}, saved template slot: ${savedTemplateSlot === null ? 'null (none)' : savedTemplateSlot}`);
         
@@ -1114,15 +1139,58 @@ class AutomationService {
       }
         
       // Send message if we have one (this may take time, but next cycle is already scheduled)
+      // CRITICAL: Wrap send in try-catch to ensure timeout is preserved even if send fails
       if (useForwardMode || (messageToSend && messageToSend.trim().length > 0)) {
         const sendStartTime = Date.now();
-        // Forward mode doesn't need forwardMessageId - it will get the last message from Saved Messages
-        await this.sendSingleMessageToAllGroups(userId, broadcast.accountId, messageToSend, useForwardMode, null, false, storedEntities);
-        const sendDuration = ((Date.now() - sendStartTime) / 1000 / 60).toFixed(2);
-        console.log(`[BROADCAST] Cycle send completed for account ${accountId} in ${sendDuration} minutes`);
+        try {
+          // Forward mode doesn't need forwardMessageId - it will get the last message from Saved Messages
+          await this.sendSingleMessageToAllGroups(userId, broadcast.accountId, messageToSend, useForwardMode, null, false, storedEntities);
+          const sendDuration = ((Date.now() - sendStartTime) / 1000 / 60).toFixed(2);
+          console.log(`[BROADCAST] Cycle send completed for account ${accountId} in ${sendDuration} minutes`);
+        } catch (sendError) {
+          // CRITICAL: Log error but don't throw - timeout is already set for next cycle
+          logError(`[BROADCAST ERROR] Error sending messages in cycle for account ${accountId}:`, sendError);
+          console.log(`[BROADCAST] Cycle send failed: ${sendError?.message || 'Unknown error'}, but next cycle is already scheduled`);
+          
+          // Check if it's a critical error that should stop the broadcast
+          const errorMessage = sendError?.message || '';
+          const isCriticalError = errorMessage.includes('not found') || 
+                                  errorMessage.includes('Account') ||
+                                  errorMessage.includes('SESSION_REVOKED') ||
+                                  errorMessage.includes('Client not available') ||
+                                  errorMessage.includes('not linked');
+          
+          if (isCriticalError) {
+            console.log(`[BROADCAST] Critical error in send, stopping broadcast for account ${accountId}`);
+            await this.stopBroadcast(userId, accountId);
+            return; // Exit early - broadcast stopped
+          }
+          // Non-critical error: continue, next cycle is already scheduled
+        }
       } else {
         console.log(`[BROADCAST] ⚠️ No message or template available for cycle, skipping send but keeping broadcast running`);
         loggingService.logBroadcast(broadcast.accountId, `Cycle skipped - no message or template available`, 'warning');
+      }
+      
+      // CRITICAL: Verify timeout is still set after send completes (defensive check)
+      const finalBroadcast = this.activeBroadcasts.get(broadcastKey);
+      if (finalBroadcast && finalBroadcast.isRunning) {
+        if (!finalBroadcast.timeouts || finalBroadcast.timeouts.length === 0) {
+          console.log(`[BROADCAST] ⚠️ WARNING: Timeout missing after cycle send for account ${accountId}, rescheduling...`);
+          try {
+            const emergencyIntervalMs = await this.getCustomInterval(accountId);
+            const emergencyTimeoutId = setTimeout(async () => {
+              await this.sendAndScheduleNextCycle(userId, accountId);
+            }, emergencyIntervalMs);
+            finalBroadcast.timeouts = [emergencyTimeoutId];
+            this.activeBroadcasts.set(broadcastKey, finalBroadcast);
+            console.log(`[BROADCAST] Emergency rescheduled next cycle in ${emergencyIntervalMs / (60 * 1000)} minutes`);
+          } catch (emergencyError) {
+            logError(`[BROADCAST ERROR] Failed to emergency reschedule:`, emergencyError);
+          }
+        } else {
+          console.log(`[BROADCAST] ✅ Timeout verified: next cycle scheduled for account ${accountId}`);
+        }
       }
     } catch (error) {
       logError(`[BROADCAST ERROR] Error in sendAndScheduleNextCycle for account ${accountId}:`, error);

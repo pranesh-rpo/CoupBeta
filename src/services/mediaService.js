@@ -5,6 +5,7 @@
 
 import db from '../database/db.js';
 import logger from '../utils/logger.js';
+import imageCacheService from './imageCacheService.js';
 
 class MediaService {
   /**
@@ -58,6 +59,34 @@ class MediaService {
       logger.logError('MEDIA', accountId, error, 'Failed to delete media');
       return { success: false, error: error.message };
     }
+  }
+
+  /**
+   * Get cached image by reference (e.g., "@IMG-3112.heic")
+   * Returns file stream ready for Telegram API
+   * @param {string} imageRef - Image reference with or without @ prefix
+   * @returns {fs.ReadStream|null} - File stream or null if not found
+   */
+  getCachedImage(imageRef) {
+    return imageCacheService.getImageStream(imageRef);
+  }
+
+  /**
+   * Check if cached image exists
+   * @param {string} imageRef - Image reference
+   * @returns {boolean}
+   */
+  hasCachedImage(imageRef) {
+    return imageCacheService.hasImage(imageRef);
+  }
+
+  /**
+   * Get cached image path
+   * @param {string} imageRef - Image reference
+   * @returns {string|null} - File path or null if not found
+   */
+  getCachedImagePath(imageRef) {
+    return imageCacheService.getImagePath(imageRef);
   }
 }
 

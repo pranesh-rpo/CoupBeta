@@ -205,28 +205,45 @@ async function checkUserVerification(bot, userId) {
     return { verified: true };
   }
 
+  // FAST: Only check DB verification status for button clicks
+  // Real-time verification is handled by background channelVerificationService periodically
+  // This makes button clicks INSTANT instead of waiting for API calls
   const isVerifiedInDb = await userService.isUserVerified(userId);
   
-  // If marked as verified in DB, do a real-time check to ensure they're still in ALL channels
+  if (isVerifiedInDb) {
+    return { verified: true };
+  }
+  
+  // User not verified in DB - return unverified
+  const channelUsernames = updatesChannels.map(ch => ch.replace('@', ''));
+  return { verified: false, channelUsernames };
+}
+
+// Legacy function for real-time verification (used by verification service, not button clicks)
+async function checkUserVerificationRealtime(bot, userId) {
+  const updatesChannels = config.getUpdatesChannels();
+  if (updatesChannels.length === 0) {
+    return { verified: true };
+  }
+
+  const isVerifiedInDb = await userService.isUserVerified(userId);
+  
   if (isVerifiedInDb) {
     const channelUsernames = updatesChannels.map(ch => ch.replace('@', ''));
     
-    // Real-time check: verify user is still in ALL channels (not just one)
+    // Real-time check: verify user is still in ALL channels
     let isStillMemberOfAll = true;
     for (const channelUsername of channelUsernames) {
       if (!channelUsername || typeof channelUsername !== 'string') {
-        continue; // Skip invalid channel names
+        continue;
       }
 
       try {
-        // CRITICAL: Use safeBotApiCall to prevent rate limiting and bot deletion
-        // getChat and getChatMember can trigger rate limits if called too frequently
         const chat = await safeBotApiCall(
           () => bot.getChat(`@${channelUsername}`),
           { maxRetries: 3, bufferSeconds: 1, throwOnFailure: false }
         );
         
-        // Validate chat response
         if (!chat || !chat.id) {
           console.warn(`[VERIFICATION] Invalid chat response for @${channelUsername}`);
           isStillMemberOfAll = false;
@@ -235,13 +252,11 @@ async function checkUserVerification(bot, userId) {
 
         const channelId = chat.id;
         
-        // CRITICAL: Use safeBotApiCall for getChatMember to prevent rate limiting
         const member = await safeBotApiCall(
           () => bot.getChatMember(channelId, userId),
           { maxRetries: 3, bufferSeconds: 1, throwOnFailure: false }
         );
         
-        // Validate member response
         if (!member || !member.status) {
           console.warn(`[VERIFICATION] Invalid member response for user ${userId} in @${channelUsername}`);
           isStillMemberOfAll = false;
@@ -253,7 +268,6 @@ async function checkUserVerification(bot, userId) {
                         member.status === 'creator';
         
         if (!isMember) {
-          // User is not in this channel - they must be in ALL channels
           console.log(`[VERIFICATION] User ${userId} is not in @${channelUsername} (required channel)`);
           isStillMemberOfAll = false;
           break;
@@ -262,7 +276,6 @@ async function checkUserVerification(bot, userId) {
         const errorMessage = checkError.message || checkError.toString() || '';
         const errorCode = checkError.response?.error_code || checkError.code;
         
-        // Handle different error types
         if (errorCode === 400 && errorMessage.includes('chat not found')) {
           console.warn(`[VERIFICATION] Channel @${channelUsername} not found or inaccessible`);
           isStillMemberOfAll = false;
@@ -272,7 +285,6 @@ async function checkUserVerification(bot, userId) {
           isStillMemberOfAll = false;
           break;
         } else if (errorCode === 400 && (errorMessage.includes('user not found') || errorMessage.includes('chat not found'))) {
-          // User is likely not a member
           console.log(`[VERIFICATION] Real-time check: User ${userId} not in @${channelUsername}`);
           isStillMemberOfAll = false;
           break;
@@ -437,26 +449,22 @@ export async function handleStart(bot, msg) {
     createMainMenu(userId)
   ]);
 
-  const welcomeMessage = `
-✨ <b>Welcome to Coup Bot</b> ✨
+  const welcomeMessage = `📊 <b>Dashboard</b>${statusText}
 
-Manage your Telegram broadcasts with ease!${statusText}
-
-Select an option from the menu below:
-  `;
+Use the menu below to manage accounts and start ads.`;
 
   try {
     await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'HTML', ...mainMenu });
-    logger.logInfo('START', `Welcome message sent to user ${userId}`, userId);
+    logger.logInfo('START', `Dashboard sent to user ${userId}`, userId);
   } catch (error) {
     logger.logError('START', userId, error, 'Failed to send welcome message');
-    // Don't throw - user already started the bot successfully
   }
 }
 
 export async function handleMainMenu(bot, callbackQuery) {
   const userId = callbackQuery.from.id;
   const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
 
   // Check verification (fast - uses cache)
   const updatesChannels = config.getUpdatesChannels();
@@ -474,9 +482,12 @@ export async function handleMainMenu(bot, callbackQuery) {
     createMainMenu(userId)
   ]);
 
-  const welcomeMessage = `👋 <b>Coup Bot</b>${statusText}`;
+  const welcomeMessage = `📊 <b>Dashboard</b>${statusText}
 
-  await safeEditMessage(bot, chatId, callbackQuery.message.message_id, welcomeMessage, { parse_mode: 'HTML', ...mainMenu });
+Use the menu below to manage accounts and start ads.`;
+
+  await safeEditMessage(bot, chatId, messageId, welcomeMessage, { parse_mode: 'HTML', ...mainMenu });
+  
   await safeAnswerCallback(bot, callbackQuery.id);
 }
 
@@ -698,11 +709,12 @@ export async function handlePhoneNumber(bot, msg, phoneNumber) {
       
       // Update message to show success and OTP keypad
       await bot.editMessageText(
-        '✅ Verification code sent!\n\nPlease enter the code using the keypad below:',
+        '✅ <b>Verification code sent!</b>\n\n📱 Enter the 5-digit code from Telegram:',
         {
           chat_id: chatId,
           message_id: connectingMsg.message_id,
-          reply_markup: createOTPKeypad().reply_markup
+          parse_mode: 'HTML',
+          reply_markup: createOTPKeypad('').reply_markup
         }
       );
       console.log(`[LINK] Verification code sent successfully to user ${userId}`);
@@ -926,6 +938,9 @@ export async function handleOTPCallback(bot, callbackQuery) {
       
       errorMessage += `Please enter the correct code using the keypad below:`;
       
+      // Clear OTP and show fresh keypad for retry
+      otpHandler.clearOTP(userId);
+      
       // Show OTP keypad again so user can enter a new code
       await safeEditMessage(
         bot,
@@ -934,28 +949,63 @@ export async function handleOTPCallback(bot, callbackQuery) {
         errorMessage,
         { 
           parse_mode: 'HTML',
-          reply_markup: createOTPKeypad().reply_markup
+          reply_markup: createOTPKeypad('').reply_markup
         }
       );
       return false;
     }
+  } else if (result.action === 'ignore') {
+    // User clicked on display area - just acknowledge
+    await safeAnswerCallback(bot, callbackQuery.id);
+    return false;
+  } else if (result.action === 'full') {
+    // Already at max digits
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: '5 digits entered. Press Submit to verify!',
+      show_alert: false,
+    });
+    return false;
+  } else if (result.action === 'error') {
+    // Validation error from OTP handler
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: result.error || 'Invalid input',
+      show_alert: true,
+    });
+    return false;
   } else {
-    // Update the message with current OTP code
+    // 'update' or 'complete' action - update the display
     const currentCode = otpHandler.getCurrentCode(userId);
-    const displayCode = currentCode.padEnd(5, '_').split('').join(' ');
+    const remainingDigits = otpHandler.getRemainingDigits(userId);
+    
+    let statusText = '📱 <b>Enter Verification Code</b>\n\n';
+    if (currentCode.length === 0) {
+      statusText += '⏳ Waiting for input...';
+    } else if (remainingDigits > 0) {
+      statusText += `✏️ ${currentCode.length}/5 digits entered`;
+    } else {
+      statusText += '✅ Code complete! Press <b>Submit Code</b> to verify.';
+    }
     
     await safeEditMessage(
       bot,
       chatId,
       callbackQuery.message.message_id,
-      `Enter verification code:\n\n\`${displayCode}\`\n\nUse the keypad below:`,
+      statusText,
       {
-        reply_markup: createOTPKeypad().reply_markup,
-        parse_mode: 'Markdown',
+        reply_markup: createOTPKeypad(currentCode).reply_markup,
+        parse_mode: 'HTML',
       }
     );
     
-    await safeAnswerCallback(bot, callbackQuery.id);
+    // Show feedback for complete code
+    if (result.action === 'complete') {
+      await safeAnswerCallback(bot, callbackQuery.id, {
+        text: '✅ 5 digits entered! Press Submit to verify.',
+        show_alert: false,
+      });
+    } else {
+      await safeAnswerCallback(bot, callbackQuery.id);
+    }
     return false;
   }
 }
@@ -1328,11 +1378,26 @@ export async function handleMessagesMenu(bot, callbackQuery) {
   }
 
   try {
-    // Run all database queries in PARALLEL for speed
-    const [currentMessage, pool, settings] = await Promise.all([
+    // Run ALL queries in PARALLEL for speed (including Saved Messages URL fetch)
+    const [currentMessage, pool, settings, savedMessagesUrl] = await Promise.all([
       messageService.getActiveMessage(accountId).catch(() => null),
       messageService.getMessagePool(accountId, true).catch(() => []),
-      configService.getAccountSettings(accountId).catch(() => null)
+      configService.getAccountSettings(accountId).catch(() => null),
+      // Fetch Saved Messages URL in parallel - no extra delay!
+      (async () => {
+        try {
+          const client = await accountLinker.ensureConnected(accountId);
+          if (client) {
+            const me = await client.getMe();
+            if (me && me.username) {
+              return `tg://resolve?domain=${me.username}`;
+            }
+          }
+        } catch (e) {
+          // Silently fail - will use callback button as fallback
+        }
+        return null;
+      })()
     ]);
 
     const usePool = settings?.useMessagePool || false;
@@ -1340,9 +1405,6 @@ export async function handleMessagesMenu(bot, callbackQuery) {
 
     // Handle both object format {text, entities} and string format for backward compatibility
     const messageText = currentMessage ? (typeof currentMessage === 'string' ? currentMessage : currentMessage.text) : null;
-
-    // Use simple fallback URL - don't try to connect to account (slow when session is invalid)
-    const savedMessagesUrl = 'tg://search?query=Saved Messages';
 
     let menuMessage = `💬 <b>Messages</b>\n\n`;
     menuMessage += `Manage your broadcast messages and message pool.\n\n`;
@@ -4750,6 +4812,116 @@ export async function handleCheckPaymentStatus(bot, callbackQuery) {
     );
   } catch (error) {
     logger.logError('PREMIUM', userId, error, 'Error checking payment status');
+  }
+}
+
+/**
+ * Handle "Go to Saved Messages" button - tries to get URL and redirect, or shows instructions
+ */
+export async function handleGoToSavedMessages(bot, callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message.chat.id;
+  const username = callbackQuery.from.username || 'Unknown';
+
+  logger.logButtonClick(userId, username, 'Go to Saved Messages', chatId);
+
+  if (!accountLinker.isLinked(userId)) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'Please link an account first!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const accountId = accountLinker.getActiveAccountId(userId);
+  if (!accountId) {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'No active account found!',
+      show_alert: true,
+    });
+    return;
+  }
+
+  // Try to get the account's username to create a direct link
+  let savedMessagesUrl = null;
+  let accountUsername = null;
+  
+  try {
+    await safeAnswerCallback(bot, callbackQuery.id, {
+      text: 'Getting Saved Messages link...',
+      show_alert: false,
+    });
+    
+    // Try to connect and get account info
+    const client = await accountLinker.getClientAndConnect(userId, accountId);
+    if (client) {
+      const me = await client.getMe();
+      if (me) {
+        if (me.username) {
+          accountUsername = me.username;
+          savedMessagesUrl = `https://t.me/${me.username}`;
+        } else if (me.id) {
+          savedMessagesUrl = `tg://user?id=${me.id}`;
+        }
+      }
+    }
+  } catch (error) {
+    console.log(`[GO_TO_SAVED] Error getting account info: ${error.message}`);
+  }
+
+  if (savedMessagesUrl) {
+    // Show message with direct link button
+    const message = accountUsername 
+      ? `📱 <b>Go to Saved Messages</b>\n\n` +
+        `Click the button below to open Saved Messages for <b>@${accountUsername}</b>:\n\n` +
+        `💡 After sending your message there, come back and click "✅ Check Saved Messages" to sync it.`
+      : `📱 <b>Go to Saved Messages</b>\n\n` +
+        `Click the button below to open Saved Messages:\n\n` +
+        `💡 After sending your message there, come back and click "✅ Check Saved Messages" to sync it.`;
+
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📱 Open Saved Messages', url: savedMessagesUrl }],
+          [{ text: '✅ Check Saved Messages', callback_data: 'btn_check_saved_messages' }],
+          [{ text: '🔙 Back to Messages', callback_data: 'btn_messages_menu' }]
+        ]
+      }
+    };
+
+    await safeEditMessage(
+      bot,
+      chatId,
+      callbackQuery.message.message_id,
+      message,
+      { parse_mode: 'HTML', ...keyboard }
+    );
+  } else {
+    // Fallback: show instructions if we couldn't get the URL
+    const instructions = `📱 <b>Open Saved Messages</b>\n\n` +
+      `Could not create a direct link. Please open Saved Messages manually:\n\n` +
+      `📱 <b>Mobile:</b> Menu (☰) → Saved Messages\n` +
+      `💻 <b>Desktop:</b> Menu (☰) → Saved Messages\n` +
+      `🔍 <b>Or:</b> Search for "Saved Messages"\n\n` +
+      `⚠️ Make sure you're using your <b>linked account's</b> Telegram app!\n\n` +
+      `After sending your message, click "✅ Check Saved Messages" below.`;
+
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✅ Check Saved Messages', callback_data: 'btn_check_saved_messages' }],
+          [{ text: '🔙 Back to Messages', callback_data: 'btn_messages_menu' }]
+        ]
+      }
+    };
+
+    await safeEditMessage(
+      bot,
+      chatId,
+      callbackQuery.message.message_id,
+      instructions,
+      { parse_mode: 'HTML', ...keyboard }
+    );
   }
 }
 

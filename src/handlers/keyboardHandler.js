@@ -430,24 +430,33 @@ export function createIntervalMenu() {
   };
 }
 
-export function createMessagesMenu(forwardMode = false, savedMessagesUrl = 'tg://search?query=Saved Messages') {
+export function createMessagesMenu(forwardMode = false, savedMessagesUrl = null) {
   const forwardModeText = forwardMode ? '🟢 Forward Mode' : '⚪ Forward Mode';
+  
+  // Build keyboard dynamically based on whether we have a valid saved messages URL
+  const keyboard = [
+    // Message Options - 2 per row
+    [
+      { text: '✍️ Set Message', callback_data: 'btn_set_start_msg' },
+      { text: '🎲 Message Pool', callback_data: 'btn_message_pool' }
+    ],
+    // Forward Mode - Full Width
+    [{ text: forwardModeText, callback_data: 'btn_config_forward_mode' }],
+  ];
+  
+  // Add Saved Messages button - use URL if available, otherwise callback
+  if (savedMessagesUrl) {
+    keyboard.push([{ text: '📱 Go to Saved Messages', url: savedMessagesUrl }]);
+  } else {
+    keyboard.push([{ text: '📱 Go to Saved Messages', callback_data: 'btn_go_to_saved_messages' }]);
+  }
+  
+  // Back button
+  keyboard.push([{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }]);
   
   return {
     reply_markup: {
-      inline_keyboard: [
-        // Message Options - 2 per row
-        [
-          { text: '✍️ Set Message', callback_data: 'btn_set_start_msg' },
-          { text: '🎲 Message Pool', callback_data: 'btn_message_pool' }
-        ],
-        // Forward Mode - Full Width
-        [{ text: forwardModeText, callback_data: 'btn_config_forward_mode' }],
-        // Go to Saved Messages - Full Width (uses account username if available, otherwise search)
-        [{ text: '📱 Go to Saved Messages', url: savedMessagesUrl }],
-        // Back - Full Width
-        [{ text: '🔙 Back to Menu', callback_data: 'btn_main_menu' }],
-      ],
+      inline_keyboard: keyboard,
     },
   };
 }

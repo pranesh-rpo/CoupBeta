@@ -789,11 +789,15 @@ class MessageService {
       // Store the message ID in the database
       if (sentMessage && sentMessage.id) {
         try {
+          // SQLite doesn't support UPDATE with ORDER BY...LIMIT, so use subquery
           await db.query(
             `UPDATE messages 
              SET saved_message_id = $1 
-             WHERE account_id = $2 AND is_active = TRUE 
-             ORDER BY updated_at DESC LIMIT 1`,
+             WHERE id = (
+               SELECT id FROM messages 
+               WHERE account_id = $2 AND is_active = TRUE 
+               ORDER BY updated_at DESC LIMIT 1
+             )`,
             [sentMessage.id, accountId]
           );
           console.log(`[SEND_TO_SAVED] Stored Saved Messages message ID: ${sentMessage.id}`);
