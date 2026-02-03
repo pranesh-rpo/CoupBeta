@@ -3404,6 +3404,137 @@ class AutomationService {
       return null;
     }
   }
+
+  /**
+   * Restore broadcasts that were running before bot restart
+   * Called on startup to continue broadcasts after redeployment
+   */
+  async restoreBroadcasts() {
+    try {
+      // Get all accounts that were broadcasting
+      const result = await db.query(
+        'SELECT account_id, user_id FROM accounts WHERE is_broadcasting = 1'
+      );
+
+      if (!result.rows || result.rows.length === 0) {
+        console.log('[BROADCAST_RESTORE] No broadcasts to restore');
+        return { restored: 0, failed: 0 };
+      }
+
+      console.log(`[BROADCAST_RESTORE] Found ${result.rows.length} broadcast(s) to restore`);
+
+      let restored = 0;
+      let failed = 0;
+
+      // Restore each broadcast
+      for (const row of result.rows) {
+        const accountId = row.account_id;
+        const userId = row.user_id;
+
+        try {
+          // Check if account is still linked and active
+          if (!accountLinker.isLinked(userId)) {
+            console.log(`[BROADCAST_RESTORE] User ${userId} is not linked, skipping account ${accountId}`);
+            // Reset flag since account is not linked
+            await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE account_id = ?', [accountId]);
+            failed++;
+            continue;
+          }
+
+          // Check if this account is still the active account for the user
+          const activeAccountId = accountLinker.getActiveAccountId(userId);
+          if (activeAccountId !== accountId) {
+            console.log(`[BROADCAST_RESTORE] Account ${accountId} is not active for user ${userId}, skipping`);
+            // Reset flag since account is not active
+            await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE account_id = ?', [accountId]);
+            failed++;
+            continue;
+          }
+
+          // Wait a bit for account linker to fully initialize clients
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          // Try to ensure client is connected
+          try {
+            await accountLinker.ensureConnected(accountId);
+          } catch (connectError) {
+            console.log(`[BROADCAST_RESTORE] Could not connect client for account ${accountId}: ${connectError.message}`);
+            // Keep flag set, will retry when client becomes available
+            failed++;
+            continue;
+          }
+
+          // Check if client is available
+          const client = accountLinker.getClient(userId, accountId);
+          if (!client || !client.connected) {
+            console.log(`[BROADCAST_RESTORE] Client not available or not connected for account ${accountId}`);
+            // Keep flag set, will retry when client becomes available
+            failed++;
+            continue;
+          }
+
+          // Restore the broadcast
+          console.log(`[BROADCAST_RESTORE] Restoring broadcast for user ${userId}, account ${accountId}`);
+          
+          // Check if broadcast is already running (prevent duplicate restore)
+          const broadcastKey = this._getBroadcastKey(userId, accountId);
+          if (this.activeBroadcasts.has(broadcastKey)) {
+            const existingBroadcast = this.activeBroadcasts.get(broadcastKey);
+            if (existingBroadcast && existingBroadcast.isRunning) {
+              console.log(`[BROADCAST_RESTORE] Broadcast already running in memory for account ${accountId}, skipping restore`);
+              restored++;
+              continue;
+            }
+          }
+          
+          try {
+            const restoreResult = await this.startBroadcast(userId, null);
+
+            if (restoreResult && restoreResult.success) {
+              console.log(`[BROADCAST_RESTORE] ✅ Successfully restored broadcast for user ${userId}, account ${accountId}`);
+              restored++;
+            } else {
+              const errorMsg = restoreResult?.error || 'Unknown error';
+              console.log(`[BROADCAST_RESTORE] ❌ Failed to restore broadcast for user ${userId}, account ${accountId}: ${errorMsg}`);
+              // Reset flag if restore failed
+              await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE account_id = ?', [accountId]);
+              failed++;
+            }
+          } catch (startError) {
+            // startBroadcast can throw errors, catch them here
+            console.error(`[BROADCAST_RESTORE] startBroadcast threw error for account ${accountId}:`, startError);
+            logError(`[BROADCAST_RESTORE] startBroadcast error:`, startError);
+            // Reset flag on error
+            try {
+              await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE account_id = ?', [accountId]);
+            } catch (dbError) {
+              // Ignore database errors
+            }
+            failed++;
+          }
+        } catch (error) {
+          console.error(`[BROADCAST_RESTORE] Error restoring broadcast for account ${accountId}:`, error);
+          logError(`[BROADCAST_RESTORE] Error restoring broadcast:`, error);
+          // Reset flag on error
+          try {
+            await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE account_id = ?', [accountId]);
+          } catch (dbError) {
+            // Ignore database errors
+          }
+          failed++;
+        }
+
+        // Small delay between restores to avoid overwhelming the system
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      console.log(`[BROADCAST_RESTORE] Completed: ${restored} restored, ${failed} failed`);
+      return { restored, failed };
+    } catch (error) {
+      logError('[BROADCAST_RESTORE] Error in restoreBroadcasts:', error);
+      return { restored: 0, failed: 0 };
+    }
+  }
 }
 
 export default new AutomationService();

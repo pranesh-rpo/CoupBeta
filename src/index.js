@@ -422,15 +422,19 @@ function checkProcessLock() {
     await accountLinker.initialize();
     console.log('✅ Account linker initialized');
     
-    // CRITICAL: Reset all is_broadcasting flags on startup (in case bot crashed)
-    // Since we just started, no broadcasts are running in memory
+    // CRITICAL: Restore broadcasts that were running before bot restart
+    // This allows broadcasts to continue after redeployment
+    console.log('[INIT] Checking for broadcasts to restore...');
     try {
-      const result = await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE is_broadcasting = 1');
-      if (result.rowCount > 0) {
-        console.log(`[INIT] Reset ${result.rowCount} stuck is_broadcasting flag(s) from previous session`);
+      const restoreResult = await automationService.restoreBroadcasts();
+      if (restoreResult.restored > 0) {
+        console.log(`[INIT] ✅ Restored ${restoreResult.restored} broadcast(s) from previous session`);
       }
-    } catch (dbError) {
-      console.log(`[INIT] Warning: Failed to reset is_broadcasting flags: ${dbError.message}`);
+      if (restoreResult.failed > 0) {
+        console.log(`[INIT] ⚠️ Failed to restore ${restoreResult.failed} broadcast(s)`);
+      }
+    } catch (restoreError) {
+      console.log(`[INIT] Warning: Failed to restore broadcasts: ${restoreError.message}`);
       // Non-critical, continue startup
     }
     
