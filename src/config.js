@@ -4,7 +4,7 @@ dotenv.config();
 
 export const config = {
   botToken: process.env.BOT_TOKEN,
-  apiId: parseInt(process.env.API_ID),
+  apiId: parseInt(process.env.API_ID, 10),
   apiHash: process.env.API_HASH,
   sessionPath: process.env.SESSION_PATH || './sessions',
   botUsername: process.env.BOT_USERNAME || 'Coup Bot',
@@ -15,7 +15,7 @@ export const config = {
   
   // Verification Channel
   verificationChannel: process.env.VERIFICATION_CHANNEL,
-  verificationChannelId: parseInt(process.env.VERIFICATION_CHANNEL_ID),
+  verificationChannelId: parseInt(process.env.VERIFICATION_CHANNEL_ID, 10),
   
   // Updates Channel (auto-join on account link)
   // Can be a single channel or comma-separated list: "channel1,channel2"
@@ -43,21 +43,21 @@ export const config = {
   ollamaApiUrl: process.env.OLLAMA_API_URL,
   aiDefaultProvider: process.env.AI_DEFAULT_PROVIDER || 'groq',
   aiModelGroq: process.env.AI_MODEL_GROQ || 'llama-3.1-8b-instant',
-  aiMaxTokens: parseInt(process.env.AI_MAX_TOKENS || '500'),
+  aiMaxTokens: parseInt(process.env.AI_MAX_TOKENS || '500', 10),
   aiTemperature: parseFloat(process.env.AI_TEMPERATURE || '0.7'),
-  aiTimeout: parseInt(process.env.AI_TIMEOUT || '30'),
+  aiTimeout: parseInt(process.env.AI_TIMEOUT || '30', 10),
   
   // Admin
   adminIds: (process.env.ADMIN_IDS || '')
     .split(',')
     .filter(x => x)
-    .map(x => parseInt(x))
+    .map(x => parseInt(x, 10))
     .filter(x => !isNaN(x)), // Remove NaN values from invalid entries
   adminBotToken: process.env.ADMIN_BOT_TOKEN,
   adminChatIds: (process.env.ADMIN_CHAT_IDS || '')
     .split(',')
     .filter(x => x)
-    .map(x => parseInt(x))
+    .map(x => parseInt(x, 10))
     .filter(x => !isNaN(x)), // Remove NaN values from invalid entries
   
   // Main Account (the account used to create the bot and APIs)
@@ -76,9 +76,9 @@ export const config = {
   // Anti-Freeze Security Settings - Aggressive settings to prevent bans
   antiFreeze: {
     // Minimum delay between messages (milliseconds) - INCREASED for safety
-    minDelayBetweenMessages: parseInt(process.env.MIN_DELAY_BETWEEN_MESSAGES) || 5000, // 5 seconds (was 2)
+    minDelayBetweenMessages: parseInt(process.env.MIN_DELAY_BETWEEN_MESSAGES, 10) || 5000, // 5 seconds (was 2)
     // Maximum delay between messages (milliseconds) - INCREASED for safety
-    maxDelayBetweenMessages: parseInt(process.env.MAX_DELAY_BETWEEN_MESSAGES) || 10000, // 10 seconds (was 5)
+    maxDelayBetweenMessages: parseInt(process.env.MAX_DELAY_BETWEEN_MESSAGES, 10) || 10000, // 10 seconds (was 5)
     // Randomize group order to avoid patterns
     randomizeOrder: true,
     // Add random jitter to cycle timing (±10%)
@@ -88,22 +88,23 @@ export const config = {
     // Maximum delay when rate limited (milliseconds)
     maxRateLimitDelay: 120000, // 120 seconds (increased from 60)
     // Batch size before taking a break - REDUCED for safety
-    batchSize: parseInt(process.env.BATCH_SIZE) || 25, // 25 groups (was 50)
+    batchSize: parseInt(process.env.BATCH_SIZE, 10) || 25, // 25 groups (was 50)
     // Break duration after batch (milliseconds) - INCREASED for safety
-    batchBreakDuration: parseInt(process.env.BATCH_BREAK_DURATION) || 60000, // 60 seconds (was 30)
+    batchBreakDuration: parseInt(process.env.BATCH_BREAK_DURATION, 10) || 60000, // 60 seconds (was 30)
     // Maximum messages per minute globally (safety limit)
-    maxMessagesPerMinute: parseInt(process.env.MAX_MESSAGES_PER_MINUTE) || 20, // Max 20 messages/minute
+    maxMessagesPerMinute: parseInt(process.env.MAX_MESSAGES_PER_MINUTE, 10) || 20, // Max 20 messages/minute
     // Maximum messages per hour globally (safety limit) - REDUCED for ban prevention
-    maxMessagesPerHour: parseInt(process.env.MAX_MESSAGES_PER_HOUR) || 300, // Max 300 messages/hour (reduced from 500)
+    maxMessagesPerHour: parseInt(process.env.MAX_MESSAGES_PER_HOUR, 10) || 300, // Max 300 messages/hour (reduced from 500)
     // Per-group cooldown period (milliseconds) - prevent sending to same group too frequently
-    perGroupCooldown: parseInt(process.env.PER_GROUP_COOLDOWN) || 300000, // 5 minutes between messages to same group
+    perGroupCooldown: parseInt(process.env.PER_GROUP_COOLDOWN, 10) || 300000, // 5 minutes between messages to same group
     // Maximum messages per day per account (configurable, safe default)
-    maxMessagesPerDay: parseInt(process.env.MAX_MESSAGES_PER_DAY) || 1500, // Max 1500 messages/day (reasonable limit)
+    // Daily cap enforcement removed - this value is now only used for display purposes
+    maxMessagesPerDay: parseInt(process.env.MAX_MESSAGES_PER_DAY, 10) || 999999, // No limit enforced
   },
   
   // Webhook Settings
   webhookUrl: process.env.WEBHOOK_URL, // Full URL where Telegram will send updates (e.g., https://yourdomain.com/webhook)
-  webhookPort: parseInt(process.env.WEBHOOK_PORT) || 3000, // Port for webhook server
+  webhookPort: parseInt(process.env.WEBHOOK_PORT, 10) || 3000, // Port for webhook server
   webhookSecretToken: process.env.WEBHOOK_SECRET_TOKEN || '', // Optional secret token for webhook verification
   
   

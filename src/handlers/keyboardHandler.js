@@ -53,8 +53,8 @@ export async function generateStatusText(userId) {
     const broadcastStatus = isBroadcasting ? '🟢 LIVE' : '⚪ OFF';
     
     const dailySent = settings?.dailySent || 0;
-    const dailyCap = settings?.dailyCap || 1500;
-    const progress = Math.min(Math.round((dailySent / dailyCap) * 100), 100);
+    const dailyCap = settings?.dailyCap || 999999;
+    const progress = dailyCap > 0 ? Math.min(Math.round((dailySent / dailyCap) * 100), 100) : 0;
     const interval = settings?.manualInterval || 11;
     
     // Build active features list

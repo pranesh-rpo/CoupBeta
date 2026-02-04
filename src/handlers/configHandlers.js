@@ -541,17 +541,18 @@ export async function handleConfigDailyCap(bot, callbackQuery) {
   }
 
   const settings = await configService.getAccountSettings(accountId);
-  const currentCap = settings?.dailyCap || 1500;
+  const currentCap = settings?.dailyCap || 999999;
 
   await safeEditMessage(
     bot,
     chatId,
     callbackQuery.message.message_id,
-    `📊 <b>Daily Message Cap</b>\n\n` +
-    `Current cap: <b>${currentCap}</b> messages/day\n\n` +
-    `Please send a number between 1 and 1000 to set the daily message cap.\n` +
+    `📊 <b>Daily Message Counter</b>\n\n` +
+    `Current display cap: <b>${currentCap}</b> messages/day\n\n` +
+    `⚠️ <i>Note: Daily cap enforcement has been removed. This setting is for display purposes only.</i>\n\n` +
+    `Please send a number (minimum 1) to set the daily counter display cap.\n` +
     `The counter resets at midnight IST.\n\n` +
-    `Example: Send <code>100</code> to set cap to 100 messages/day.`,
+    `Example: Send <code>100</code> to set display cap to 100 messages/day.`,
     { parse_mode: 'HTML', ...createBackButton() }
   );
   
@@ -566,10 +567,10 @@ export async function handleDailyCapInput(bot, msg, accountId, cap) {
   const result = await configService.setDailyCap(accountId, cap);
   
   if (result.success) {
-    logger.logSuccess('CONFIG', userId, `Daily cap set to ${cap}`);
+    logger.logSuccess('CONFIG', userId, `Daily cap set to ${cap} (display only)`);
     await bot.sendMessage(
       chatId,
-      `✅ Daily cap set to <b>${cap}</b> messages/day\n\nThe counter resets at midnight IST.`,
+      `✅ Daily counter display cap set to <b>${cap}</b> messages/day\n\n⚠️ <i>Note: Daily cap enforcement has been removed. This is for display purposes only.</i>\n\nThe counter resets at midnight IST.`,
       { parse_mode: 'HTML', ...createMainMenu() }
     );
   } else {

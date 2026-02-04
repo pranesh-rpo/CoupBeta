@@ -6,7 +6,7 @@
  */
 
 import logger from './logger.js';
-import { isFloodWaitError, extractWaitTime, waitForFloodError, safeBotApiCall } from './floodWaitHandler.js';
+import { isFloodWaitError, isNetworkError, extractWaitTime, waitForFloodError, safeBotApiCall } from './floodWaitHandler.js';
 
 /**
  * Safely edit a message, ignoring "message is not modified" errors
@@ -34,6 +34,9 @@ export async function safeEditMessage(bot, chatId, messageId, text, options = {}
       logger.logChange('MESSAGE_EDIT', null, `Message ${messageId} edited in chat ${chatId}`);
       return true;
     }
+    
+    // If result is null, it means all retries were exhausted
+    // The error was already logged by safeBotApiCall, so we just return false
     return false;
   } catch (error) {
     // Handle "message is not modified" error gracefully
@@ -61,6 +64,12 @@ export async function safeEditMessage(bot, chatId, messageId, text, options = {}
     if (isFloodWaitError(error)) {
       const waitSeconds = extractWaitTime(error);
       logger.logError('MESSAGE_EDIT', null, error, `FloodWaitError editing message ${messageId} in chat ${chatId} (wait: ${waitSeconds}s)`);
+      return false;
+    }
+    
+    // Check if it's a network error
+    if (isNetworkError(error)) {
+      logger.logError('MESSAGE_EDIT', null, error, `Network error editing message ${messageId} in chat ${chatId} (all retries exhausted)`);
       return false;
     }
     

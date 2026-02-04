@@ -268,7 +268,7 @@ class LoggerBotService {
       } catch (error) {
         // Try to send error message
         try {
-          await this.bot.sendMessage(chatId, '❌ Error retrieving status. Please try again later.');
+          await this.bot.sendMessage(chatId, '⚠️ <b>Couldn\'t Retrieve Status</b>\n\nPlease try again in a moment.');
         } catch (e) {
           // Ignore if we can't send error message
         }
@@ -320,7 +320,7 @@ class LoggerBotService {
           await this.bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
         } catch (error) {
           try {
-            await this.bot.sendMessage(chatId, '❌ Error retrieving logs. Please try again later.');
+            await this.bot.sendMessage(chatId, '⚠️ <b>Couldn\'t Retrieve Logs</b>\n\nPlease try again in a moment.');
           } catch (e) {
             // Ignore if we can't send error message
           }
@@ -328,7 +328,7 @@ class LoggerBotService {
         }
       } catch (error) {
         try {
-          await this.bot.sendMessage(chatId, '❌ Error processing command. Please try again later.');
+          await this.bot.sendMessage(chatId, '⚠️ <b>Command Error</b>\n\nSomething went wrong processing your command. Please try again.');
         } catch (e) {
           // Ignore if we can't send error message
         }
@@ -384,7 +384,7 @@ class LoggerBotService {
           await this.bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
         } catch (error) {
           try {
-            await this.bot.sendMessage(chatId, '❌ Error retrieving summary. Please try again later.');
+            await this.bot.sendMessage(chatId, '⚠️ <b>Couldn\'t Retrieve Summary</b>\n\nPlease try again in a moment.');
           } catch (e) {
             // Ignore if we can't send error message
           }
@@ -392,7 +392,7 @@ class LoggerBotService {
         }
       } catch (error) {
         try {
-          await this.bot.sendMessage(chatId, '❌ Error processing command. Please try again later.');
+          await this.bot.sendMessage(chatId, '⚠️ <b>Command Error</b>\n\nSomething went wrong processing your command. Please try again.');
         } catch (e) {
           // Ignore if we can't send error message
         }

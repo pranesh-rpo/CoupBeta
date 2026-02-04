@@ -111,6 +111,7 @@ class AccountLinker {
     this.pendingPasswordAuth = new Map(); // userId -> { phone, client }
     this.pendingWebLogins = new Map(); // userId -> { client, token, expiresAt }
     this.passwordAttempts = new Map(); // userId -> { attempts: number, cooldownUntil: timestamp }
+    this.rateLimitCooldowns = new Map(); // userId -> { cooldownUntil: timestamp, waitSeconds: number }
     // Keep-alive removed - clients connect on-demand
     this.initialized = false;
     
@@ -1192,6 +1193,28 @@ class AccountLinker {
         }
       }
       
+      // Check if user is in rate limit cooldown period
+      const rateLimitData = this.rateLimitCooldowns.get(userId);
+      if (rateLimitData && rateLimitData.cooldownUntil) {
+        const now = Date.now();
+        const cooldownRemaining = rateLimitData.cooldownUntil - now;
+        
+        if (cooldownRemaining > 0) {
+          // Still in cooldown period
+          const remainingMinutes = Math.ceil(cooldownRemaining / 60000);
+          const remainingSeconds = Math.ceil(cooldownRemaining / 1000);
+          logError(`[LINK ERROR] User ${userId} attempted to initiate link during rate limit cooldown. ${remainingMinutes} minute(s) (${remainingSeconds} seconds) remaining.`);
+          
+          return { 
+            success: false, 
+            error: `Rate limited by Telegram. Please wait ${remainingMinutes} minute(s) (${remainingSeconds} seconds) before requesting a new code.` 
+          };
+        } else {
+          // Cooldown expired, remove it
+          this.rateLimitCooldowns.delete(userId);
+        }
+      }
+      
       // Check if user already has too many pending verifications (prevent abuse)
       const existingPending = this.pendingVerifications.get(userId);
       if (existingPending) {
@@ -1284,6 +1307,26 @@ class AccountLinker {
       if (isFloodWaitError(error)) {
         const waitSeconds = extractWaitTime(error) || 60;
         const waitMinutes = Math.ceil(waitSeconds / 60);
+        
+        // Store rate limit cooldown to prevent repeated attempts
+        const cooldownUntil = Date.now() + (waitSeconds * 1000);
+        this.rateLimitCooldowns.set(userId, {
+          cooldownUntil: cooldownUntil,
+          waitSeconds: waitSeconds
+        });
+        
+        // Clean up old rate limit entries periodically (keep only last 50)
+        if (this.rateLimitCooldowns.size > 50) {
+          const now = Date.now();
+          for (const [uid, data] of this.rateLimitCooldowns.entries()) {
+            if (data.cooldownUntil && data.cooldownUntil < now) {
+              this.rateLimitCooldowns.delete(uid);
+            }
+          }
+        }
+        
+        logError(`[LINK ERROR] Rate limit detected for user ${userId}. Cooldown until ${new Date(cooldownUntil).toISOString()} (${waitMinutes} minute(s), ${waitSeconds} seconds)`);
+        
         return { 
           success: false, 
           error: `Rate limited by Telegram. Please wait ${waitMinutes} minute(s) (${waitSeconds} seconds) before requesting a new code.` 

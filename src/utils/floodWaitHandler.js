@@ -7,6 +7,65 @@
 import { logError } from './logger.js';
 
 /**
+ * Check if an error is a network error that should be retried
+ * @param {Error} error - The error object
+ * @returns {boolean} - True if it's a retryable network error
+ */
+export function isNetworkError(error) {
+  if (!error) return false;
+  
+  const errorMessage = (error.message || error.toString() || '').toLowerCase();
+  const errorCode = error.code || error.errorCode;
+  const errorName = error.name || '';
+  const errorCause = error.cause || error.error || null;
+  const errorStack = error.stack || '';
+  
+  // Check for AggregateError (from request-promise-core)
+  if (errorName === 'AggregateError' || errorName === 'RequestError') {
+    return true;
+  }
+  
+  // Check for common network error codes
+  const networkErrorCodes = [
+    'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ESOCKETTIMEDOUT',
+    'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH'
+  ];
+  
+  if (networkErrorCodes.includes(errorCode)) {
+    return true;
+  }
+  
+  // Check error message for network-related keywords
+  const networkKeywords = [
+    'network', 'timeout', 'connection', 'socket', 'econnreset',
+    'econnrefused', 'etimedout', 'enotfound', 'aggregateerror',
+    'requesterror', 'disconnected', 'not connected', 'failed to connect'
+  ];
+  
+  if (networkKeywords.some(keyword => errorMessage.includes(keyword))) {
+    return true;
+  }
+  
+  // Check error cause
+  if (errorCause) {
+    const causeCode = errorCause.code || errorCause.errorCode;
+    const causeMessage = (errorCause.message || errorCause.toString() || '').toLowerCase();
+    
+    if (networkErrorCodes.includes(causeCode) || 
+        networkKeywords.some(keyword => causeMessage.includes(keyword))) {
+      return true;
+    }
+  }
+  
+  // Check stack trace for network errors
+  if (errorStack && networkKeywords.some(keyword => errorStack.toLowerCase().includes(keyword))) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
  * Check if an error is a FloodWaitError or rate limiting error
  * @param {Error} error - The error object
  * @returns {boolean} - True if it's a rate limiting error
@@ -297,11 +356,24 @@ export async function safeBotApiCall(apiCall, options = {}) {
         }
       }
       
-      // If not a flood wait error, or max retries reached, handle accordingly
+      // Check if it's a network error (retryable)
+      if (isNetworkError(error) && attempt < maxRetries) {
+        // Use exponential backoff for network errors: 2s, 4s, 8s, etc.
+        const backoffSeconds = Math.min(2 ** attempt * 2, 30); // Cap at 30 seconds
+        console.log(`[NETWORK_ERROR] ⚠️ Network error detected (${error.name || error.code || 'unknown'}). Attempt ${attempt + 1}/${maxRetries + 1}. Retrying after ${backoffSeconds}s...`);
+        
+        await new Promise((resolve) => setTimeout(resolve, backoffSeconds * 1000));
+        continue; // Retry
+      }
+      
+      // If max retries reached, handle accordingly
       if (attempt >= maxRetries) {
         if (isFloodWaitError(error)) {
           console.error(`[FLOOD_WAIT] ❌ Bot API call failed after ${maxRetries + 1} attempts due to rate limiting. This may indicate severe rate limiting.`);
           logError('FLOOD_WAIT', null, error, `Bot API call failed after ${maxRetries + 1} attempts`);
+        } else if (isNetworkError(error)) {
+          console.error(`[NETWORK_ERROR] ❌ Bot API call failed after ${maxRetries + 1} attempts due to network errors.`);
+          logError('NETWORK_ERROR', null, error, `Bot API call failed after ${maxRetries + 1} attempts`);
         }
         
         if (throwOnFailure) {
@@ -310,7 +382,7 @@ export async function safeBotApiCall(apiCall, options = {}) {
         return null;
       }
       
-      // For non-flood-wait errors, throw immediately (don't retry)
+      // For non-retryable errors, throw immediately (don't retry)
       throw error;
     }
   }

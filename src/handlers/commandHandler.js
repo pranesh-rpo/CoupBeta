@@ -544,7 +544,7 @@ export async function handleLoginCancel(bot, callbackQuery) {
   // Remove keyboard and show main menu
   await bot.sendMessage(
     chatId,
-    '❌ Link cancelled.',
+    'ℹ️ Account linking cancelled. You can try again anytime.',
     { reply_markup: { remove_keyboard: true } }
   );
   
@@ -639,8 +639,9 @@ export async function handlePhoneNumber(bot, msg, phoneNumber, processingMsgId =
       
       // Try to edit the status message, or send new one if it fails
       try {
-        // Use generic error message - don't expose technical details
-        const errorMessage = `❌ <b>Account Linking Failed</b>\n\n${getUserFriendlyErrorMessage()}\n\nClick "🔗 Link Account" to try again.`;
+        // Get user-friendly error message based on the actual error
+        const friendlyErrorMsg = getUserFriendlyErrorMessage(result.error);
+        const errorMessage = `${friendlyErrorMsg}\n\nClick "🔗 Link Account" to try again.`;
         
         await bot.editMessageText(
           errorMessage,
@@ -652,9 +653,10 @@ export async function handlePhoneNumber(bot, msg, phoneNumber, processingMsgId =
           }
         );
       } catch (editError) {
+        const friendlyErrorMsg = getUserFriendlyErrorMessage(result.error);
         await bot.sendMessage(
           chatId,
-          `❌ <b>Account Linking Failed</b>\n\n${getUserFriendlyErrorMessage()}\n\nPlease try again using the "Link Account" button.`,
+          `${friendlyErrorMsg}\n\nPlease try again using the "Link Account" button.`,
           { parse_mode: 'HTML', ...await createMainMenu(userId) }
         );
       }
@@ -669,11 +671,14 @@ export async function handlePhoneNumber(bot, msg, phoneNumber, processingMsgId =
       details: 'Exception during account linking',
     }).catch(() => {}); // Silently fail to avoid blocking
     
+    // Get user-friendly error message based on the actual error
+    const friendlyErrorMsg = getUserFriendlyErrorMessage(error);
+    
     // Send error message with better formatting
     try {
       await bot.sendMessage(
         chatId,
-        `❌ <b>Account Linking Error</b>\n\n${getUserFriendlyErrorMessage()}\n\nClick "🔗 Link Account" to retry.`,
+        `${friendlyErrorMsg}\n\nClick "🔗 Link Account" to retry.`,
         { parse_mode: 'HTML', ...await createMainMenu(userId) }
       );
     } catch (sendError) {
@@ -695,7 +700,7 @@ export async function handleOTPCallback(bot, callbackQuery) {
     // Validate OTP code: must be exactly 5 digits
     if (code.length !== 5 || !/^\d{5}$/.test(code)) {
       await safeAnswerCallback(bot, callbackQuery.id, {
-        text: 'Please enter a valid 5-digit numeric code',
+        text: '🔐 Please enter a valid 5-digit verification code',
         show_alert: true,
       });
       return false;
@@ -779,11 +784,11 @@ export async function handleOTPCallback(bot, callbackQuery) {
       otpHandler.clearOTP(userId);
       
       // Provide helpful error message (don't expose technical details)
-      let errorText = `❌ Invalid Code\n\nThe code you entered is incorrect. Please try again.`;
+      let errorText = `🔐 <b>Invalid Verification Code</b>\n\nThe code you entered doesn't match. Please double-check and try again.`;
       if (verifyResult.error && (verifyResult.error.includes('expired') || verifyResult.error.includes('timeout'))) {
-        errorText = `❌ Code Expired\n\nThe verification code has expired. Please request a new code.`;
+        errorText = `⏰ <b>Code Expired</b>\n\nThe verification code has expired. Please click "🔗 Link Account" to request a new code.`;
       } else if (verifyResult.error && verifyResult.error.includes('Rate limited')) {
-        errorText = `❌ Rate Limited\n\n${verifyResult.error}`;
+        errorText = `⏳ <b>Too Many Attempts</b>\n\nPlease wait a moment before trying again.`;
       }
       
       await safeAnswerCallback(bot, callbackQuery.id, {
@@ -793,11 +798,12 @@ export async function handleOTPCallback(bot, callbackQuery) {
       
       // Show error message and OTP keypad again so user can enter a new code
       const errorMsg = verifyResult.error || '';
-      let errorMessage = `❌ <b>Verification Failed</b>\n\n`;
+      let errorMessage = `🔐 <b>Verification Code Incorrect</b>\n\n`;
       
       if (errorMsg && (errorMsg.includes('code') || errorMsg.includes('invalid'))) {
-        errorMessage += `The code you entered is incorrect.\n\n`;
-        errorMessage += `Please enter the correct code using the keypad below:`;
+        errorMessage += `The code you entered doesn't match. Please check the code sent to your Telegram app and try again.\n\n`;
+        errorMessage += `💡 <b>Tip:</b> Make sure you're entering all 5 digits correctly.\n\n`;
+        errorMessage += `Enter the code using the keypad below:`;
         
         // Clear OTP and show fresh keypad for retry
         otpHandler.clearOTP(userId);
@@ -815,8 +821,11 @@ export async function handleOTPCallback(bot, callbackQuery) {
         );
         return false;
       } else if (errorMsg && (errorMsg.includes('expired') || errorMsg.includes('timeout'))) {
-        errorMessage += `The verification code has expired.\n\n`;
-        errorMessage += `Please click "🔗 Link Account" to request a new code.`;
+        errorMessage += `⏰ <b>Code Expired</b>\n\nThe verification code has expired for security reasons.\n\n`;
+        errorMessage += `📝 <b>What to do:</b>\n`;
+        errorMessage += `• Click "🔗 Link Account" below to start over\n`;
+        errorMessage += `• You'll receive a new verification code\n`;
+        errorMessage += `• Enter the new code when prompted`;
         await safeEditMessage(
           bot,
           chatId,
@@ -835,8 +844,12 @@ export async function handleOTPCallback(bot, callbackQuery) {
         return false;
       } else {
         // Use generic error message for other errors
-        errorMessage += `An error occurred. Please try again.\n\n`;
-        errorMessage += `Please enter the correct code using the keypad below:`;
+        errorMessage += `⚠️ <b>Something Went Wrong</b>\n\n`;
+        errorMessage += `We couldn't verify your code. This might be a temporary issue.\n\n`;
+        errorMessage += `📝 <b>What to do:</b>\n`;
+        errorMessage += `• Try entering the code again using the keypad below\n`;
+        errorMessage += `• Make sure you're entering all 5 digits\n`;
+        errorMessage += `• If the problem persists, click "🔗 Link Account" to start over`;
         
         // Clear OTP and show fresh keypad for retry
         otpHandler.clearOTP(userId);
@@ -894,7 +907,7 @@ export async function handleOTPCallback(bot, callbackQuery) {
       bot,
       chatId,
       callbackQuery.message.message_id,
-      `❌ <b>Linking Cancelled</b>\n\nAccount linking has been cancelled. You can try again anytime.`,
+      `ℹ️ <b>Linking Cancelled</b>\n\nYou cancelled the account linking process.\n\n💡 <b>No worries!</b> You can start linking your account again anytime from the main menu.`,
       { 
         parse_mode: 'HTML',
         reply_markup: {
@@ -953,7 +966,7 @@ export async function handleSetStartMessage(bot, msg) {
   if (!accountLinker.isLinked(userId)) {
     await bot.sendMessage(
       chatId,
-      '❌ Please link an account first!',
+      '🔗 <b>Account Not Linked</b>\n\nPlease link your Telegram account first to set a broadcast message.\n\n📝 <b>What to do:</b>\n• Click "🔗 Link Account" from the main menu\n• Follow the verification steps\n• Then come back to set your message',
       await createMainMenu(userId)
     );
     console.log(`[handleSetStartMessage] User ${userId} not linked, returning false`);
@@ -964,7 +977,7 @@ export async function handleSetStartMessage(bot, msg) {
   if (!accountId) {
     await bot.sendMessage(
       chatId,
-      '❌ No active account found!',
+      '🔗 <b>No Active Account</b>\n\nPlease link or switch to an account first.',
       await createMainMenu(userId)
     );
     console.log(`[handleSetStartMessage] User ${userId} has no active account, returning false`);
@@ -1007,7 +1020,7 @@ export async function handleSetStartMessage(bot, msg) {
   if (text.length > 4096) {
     await bot.sendMessage(
       chatId,
-      '❌ Message is too long. Telegram messages have a maximum length of 4096 characters.\n\nPlease shorten your message and try again.',
+      '📝 <b>Message Too Long</b>\n\nYour message exceeds Telegram\'s limit of 4,096 characters.\n\n📝 <b>What to do:</b>\n• Shorten your message\n• Split it into multiple parts if needed\n• Try again with a shorter message',
       createBackButton()
     );
     console.log(`[handleSetStartMessage] User ${userId} sent message that's too long: ${text.length} characters`);
@@ -1055,7 +1068,7 @@ export async function handleSetStartMessage(bot, msg) {
     console.log(`[handleSetStartMessage] User ${userId} successfully set message, returning true`);
     return true; // Success - clear pending state
   } else {
-    const errorMessage = `❌ <b>Failed to Save Message</b>\n\n${getUserFriendlyErrorMessage()}\n\nYour message is still saved - you can retry.`;
+    const errorMessage = `⚠️ <b>Couldn't Save Message</b>\n\n${getUserFriendlyErrorMessage()}\n\n💡 <b>Don't worry!</b> Your message is safe. Please try saving again.`;
     
     await bot.sendMessage(
       chatId,
@@ -1075,21 +1088,24 @@ export async function handlePasswordInput(bot, msg, password, statusMsgId = null
 
   // Check if there's a pending password authentication
   if (!accountLinker.isPasswordRequired(userId) && !accountLinker.isWebLoginPasswordRequired(userId)) {
-    logger.logError('2FA', userId, new Error('No pending password authentication found'), 'Password verification failed');
-    console.log(`[2FA] User ${userId} attempted password input but no pending authentication found`);
+    // This is a stale state - pendingPasswords Map has the user but accountLinker doesn't
+    // Log as info instead of error since this is expected when state expires
+    logger.logInfo('2FA', `Password input attempted but authentication state expired for user ${userId}`, userId);
+    console.log(`[2FA] User ${userId} attempted password input but no pending authentication found (stale state)`);
     if (statusMsgId) {
       await bot.editMessageText(
-        '❌ <b>No Active Authentication</b>\n\nPlease start the account linking process again.',
+        '❌ <b>Authentication Expired</b>\n\nYour password authentication session has expired. Please start the account linking process again.',
         { chat_id: chatId, message_id: statusMsgId, parse_mode: 'HTML', ...await createMainMenu(userId) }
       ).catch(() => {});
     } else {
       await bot.sendMessage(
         chatId,
-        '❌ <b>No Active Authentication</b>\n\nPlease start the account linking process again.',
+        '❌ <b>Authentication Expired</b>\n\nYour password authentication session has expired. Please start the account linking process again.',
         { parse_mode: 'HTML', ...await createMainMenu(userId) }
-      );
+      ).catch(() => {});
     }
-    return { success: false, error: 'No pending password authentication found' };
+    // Return staleState flag so caller can clean up pendingPasswords Map
+    return { success: false, error: 'No pending password authentication found', staleState: true };
   }
 
   logger.logChange('2FA', userId, '2FA password provided');
@@ -1152,20 +1168,24 @@ export async function handlePasswordInput(bot, msg, password, statusMsgId = null
       
       // Check if max attempts reached
       if (result.maxAttemptsReached) {
-        let errorMessage = `❌ <b>Maximum Password Attempts Reached</b>\n\n`;
-        errorMessage += `You have exceeded the maximum number of password attempts (3 tries).\n\n`;
+        let errorMessage = `🔒 <b>Too Many Password Attempts</b>\n\n`;
+        errorMessage += `You've tried entering your password 3 times, but it wasn't correct.\n\n`;
         
         // Show cooldown information if available
         if (result.cooldownRemaining && result.cooldownRemaining > 0) {
           const minutes = result.cooldownMinutes || Math.ceil(result.cooldownRemaining / 60000);
           const seconds = result.cooldownSeconds || Math.ceil(result.cooldownRemaining / 1000);
           errorMessage += `⏳ <b>Please wait:</b> ${minutes} minute(s) (${seconds} seconds)\n\n`;
-          errorMessage += `After the wait period, you can try entering your password again.\n\n`;
+          errorMessage += `This cooldown period helps protect your account.\n\n`;
         } else {
-          errorMessage += `⏳ Please wait a few minutes before trying again.\n\n`;
+          errorMessage += `⏳ <b>Please wait:</b> A few minutes\n\n`;
+          errorMessage += `This cooldown period helps protect your account.\n\n`;
         }
         
-        errorMessage += `You can try again after the wait period.`;
+        errorMessage += `📝 <b>After waiting:</b>\n`;
+        errorMessage += `• Click "🔗 Link Account" to start over\n`;
+        errorMessage += `• Make sure you have the correct password ready\n`;
+        errorMessage += `• You'll have 3 more attempts`;
         
         await bot.editMessageText(
           errorMessage,
@@ -1186,15 +1206,26 @@ export async function handlePasswordInput(bot, msg, password, statusMsgId = null
         const remainingAttempts = result.remainingAttempts !== undefined ? result.remainingAttempts : 2;
         const attempts = result.attempts !== undefined ? result.attempts : 1;
         
-        // Try to edit the status message, or send new one if it fails
-        let errorMessage = `❌ <b>Password Verification Failed</b>\n\n${getUserFriendlyErrorMessage()}\n\n`;
-        errorMessage += `⚠️ <b>Attempts:</b> ${attempts}/3\n`;
-        errorMessage += `🔄 <b>Remaining:</b> ${remainingAttempts} ${remainingAttempts === 1 ? 'try' : 'tries'}\n\n`;
+        // Get user-friendly error message based on the actual error
+        const friendlyErrorMsg = getUserFriendlyErrorMessage(result.error);
         
-        if (remainingAttempts > 0) {
-          errorMessage += `Please try entering your password again.`;
-        } else {
-          errorMessage += `You can try entering your password again after the wait period.`;
+        // Try to edit the status message, or send new one if it fails
+        let errorMessage = `${friendlyErrorMsg}\n\n`;
+        
+        // Only show attempts info if it's a password-related error (not account conflict)
+        if (!result.error || !result.error.toLowerCase().includes('already linked') && !result.error.toLowerCase().includes('broadcasting')) {
+          errorMessage += `🔐 <b>Password Attempts:</b> ${attempts}/3\n`;
+          errorMessage += `🔄 <b>Remaining:</b> ${remainingAttempts} ${remainingAttempts === 1 ? 'try' : 'tries'}\n\n`;
+          
+          if (remainingAttempts > 0) {
+            errorMessage += `📝 <b>What to do:</b>\n`;
+            errorMessage += `• Double-check your password\n`;
+            errorMessage += `• Make sure Caps Lock is off\n`;
+            errorMessage += `• Try entering it again`;
+          } else {
+            errorMessage += `⏳ <b>Cooldown Period</b>\n\n`;
+            errorMessage += `Please wait a few minutes before trying again. This helps protect your account.`;
+          }
         }
         
         await bot.editMessageText(
@@ -1212,16 +1243,19 @@ export async function handlePasswordInput(bot, msg, password, statusMsgId = null
       details: 'Exception during password verification',
     }).catch(() => {}); // Silently fail to avoid blocking
     
+    // Get user-friendly error message based on the actual error
+    const friendlyErrorMsg = getUserFriendlyErrorMessage(error);
+    
     // Edit message with error
     if (msgId) {
       await bot.editMessageText(
-        `❌ <b>Password Verification Error</b>\n\n${getUserFriendlyErrorMessage()}\n\nClick "🔗 Link Account" to retry.`,
+        `${friendlyErrorMsg}\n\nClick "🔗 Link Account" to retry.`,
         { chat_id: chatId, message_id: msgId, parse_mode: 'HTML', ...await createMainMenu(userId) }
       ).catch(() => {});
     } else {
       await bot.sendMessage(
         chatId,
-        `❌ <b>Password Verification Error</b>\n\n${getUserFriendlyErrorMessage()}\n\nClick "🔗 Link Account" to retry.`,
+        `${friendlyErrorMsg}\n\nClick "🔗 Link Account" to retry.`,
         { parse_mode: 'HTML', ...await createMainMenu(userId) }
       ).catch(() => {});
     }
@@ -1264,7 +1298,7 @@ export async function handleMessagesMenu(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -1325,7 +1359,7 @@ ${msgPreview}
   } catch (error) {
     console.error(`[MESSAGES_MENU] Error:`, error.message);
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'An error occurred. Please try again.',
+      text: '⚠️ Something went wrong. Please try again.',
       show_alert: true,
     });
   }
@@ -1373,7 +1407,7 @@ export async function handleSetStartMessageButton(bot, callbackQuery) {
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ <b>Account Not Found</b>\n\n' +
+        '🔍 <b>Account Not Found</b>\n\nWe couldn\'t find your account. This might be a temporary issue.\n\n📝 <b>What to do:</b>\n• Try refreshing your account list\n• Make sure your account is properly linked\n• If the problem persists, try linking your account again\n\n' +
         `The account (ID: ${accountId}) is no longer linked or has been deleted.\n\n` +
         `Please link your account again from the Account menu.`,
         { parse_mode: 'HTML', ...await createMainMenu(userId) }
@@ -1826,7 +1860,7 @@ export async function handleStartBroadcast(bot, msg) {
   if (!accountId) {
     await bot.sendMessage(
       chatId,
-      `❌ <b>No Active Account</b>\n\nPlease switch to an account or link a new one.`,
+      `🔗 <b>No Active Account</b>\n\nYou need to have an active account to use this feature.\n\n📝 <b>What to do:</b>\n• Click "🔗 Link Account" to link a new account\n• Or switch to an existing account from the Account menu`,
       { parse_mode: 'HTML', ...await createMainMenu(userId) }
     );
     return;
@@ -2202,7 +2236,7 @@ export async function handleStopBroadcast(bot, msg) {
   if (!accountId) {
     await bot.sendMessage(
       chatId,
-      '❌ No active account found!',
+      '🔗 <b>No Active Account</b>\n\nPlease link or switch to an account first.',
       await createMainMenu(userId)
     );
     return;
@@ -2267,7 +2301,7 @@ export async function handleStopBroadcastButton(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -2299,7 +2333,7 @@ export async function handleStopCallback(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -2475,7 +2509,7 @@ export async function handleLoggerBotButton(bot, callbackQuery) {
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ <b>Logger Bot Error</b>\n\nCould not connect to logger bot. Please try again later.',
+        '⚠️ <b>Logger Bot Unavailable</b>\n\nThe logger bot is temporarily unavailable.\n\n📝 <b>What to do:</b>\n• Try again in a few moments\n• Make sure the logger bot is running\n• Contact support if the problem persists',
         { parse_mode: 'HTML', ...await createMainMenu(userId) }
       );
       return;
@@ -2535,7 +2569,7 @@ export async function handleLoggerBotButton(bot, callbackQuery) {
       bot,
       chatId,
       callbackQuery.message.message_id,
-      '❌ <b>Error</b>\n\nFailed to get logger bot information. Please try again later.',
+      '⚠️ <b>Couldn\'t Get Logger Bot Info</b>\n\nWe couldn\'t retrieve logger bot information right now.\n\n📝 <b>What to do:</b>\n• Try again in a moment\n• Check if the logger bot is running\n• Contact support if needed',
       { parse_mode: 'HTML', ...await createMainMenu(userId) }
     );
   }
@@ -2712,7 +2746,7 @@ export async function handlePoolAddMessage(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -2736,7 +2770,7 @@ export async function handlePoolAddMessage(bot, callbackQuery) {
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ <b>Account Not Found</b>\n\n' +
+        '🔍 <b>Account Not Found</b>\n\nWe couldn\'t find your account. This might be a temporary issue.\n\n📝 <b>What to do:</b>\n• Try refreshing your account list\n• Make sure your account is properly linked\n• If the problem persists, try linking your account again\n\n' +
         `The account (ID: ${accountId}) is no longer linked or has been deleted.\n\n` +
         `Please link your account again from the Account menu.`,
         { parse_mode: 'HTML', ...await createMainMenu(userId) }
@@ -2817,7 +2851,7 @@ export async function handlePoolAddMessage(bot, callbackQuery) {
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ Account client not available. Please try again.',
+        '⚠️ <b>Account Connection Issue</b>\n\nYour account connection is temporarily unavailable.\n\n📝 <b>What to do:</b>\n• Wait a moment and try again\n• Make sure your account is properly linked\n• If the problem persists, try re-linking your account',
         { parse_mode: 'HTML', ...createBackButton() }
       );
       return;
@@ -3003,7 +3037,7 @@ export async function handlePoolAddFromSaved(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3023,7 +3057,7 @@ export async function handlePoolAddFromSaved(bot, callbackQuery) {
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ Account client not available. Please try again.',
+        '⚠️ <b>Account Connection Issue</b>\n\nYour account connection is temporarily unavailable.\n\n📝 <b>What to do:</b>\n• Wait a moment and try again\n• Make sure your account is properly linked\n• If the problem persists, try re-linking your account',
         { parse_mode: 'HTML', ...createBackButton() }
       );
       return;
@@ -3102,7 +3136,7 @@ export async function handlePoolAddFromSaved(bot, callbackQuery) {
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ <b>Message Too Long</b>\n\nMessage exceeds 4096 characters. Please shorten it and try again.',
+        '📝 <b>Message Too Long</b>\n\nYour message exceeds Telegram\'s 4,096 character limit.\n\n📝 <b>What to do:</b>\n• Shorten your message\n• Split it into multiple parts if needed\n• Try again with a shorter message',
         { parse_mode: 'HTML', ...createBackButton() }
       );
       return;
@@ -3183,7 +3217,7 @@ export async function handlePoolViewMessages(bot, callbackQuery, page = 0) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3244,7 +3278,7 @@ export async function handlePoolDeleteMessage(bot, callbackQuery, messageId) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3287,7 +3321,7 @@ export async function handlePoolToggleMessage(bot, callbackQuery, messageId) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3325,7 +3359,7 @@ export async function handlePoolModeChange(bot, callbackQuery, mode) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3359,7 +3393,7 @@ export async function handlePoolToggle(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3397,7 +3431,7 @@ export async function handlePoolClear(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3453,7 +3487,7 @@ export async function handleSavedTemplatesButton(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3497,7 +3531,7 @@ export async function handleTemplateSync(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3562,7 +3596,7 @@ export async function handleTemplateSelect(bot, callbackQuery, slot) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3629,7 +3663,7 @@ export async function handleTemplateClear(bot, callbackQuery, slot) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -3810,7 +3844,7 @@ Use the buttons below to navigate:
   } catch (error) {
     logger.logError('VERIFICATION', userId, error, 'Error verifying user');
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'Error checking verification. Please try again.',
+      text: '⚠️ Couldn\'t check verification status. Please try again.',
       show_alert: true,
     });
   }
@@ -3936,7 +3970,7 @@ export async function handleRefreshGroups(bot, callbackQuery) {
         if (result.error.includes('account') || result.error.includes('Account')) {
         } else if (result.error.includes('connection') || result.error.includes('Connection')) {
         }
-        errorMessage += `Please try again.`;
+        errorMessage += `📝 <b>What to do:</b>\n• Double-check your input\n• Make sure everything is correct\n• Try again`;
         
         await safeEditMessage(
           bot,
@@ -4279,7 +4313,7 @@ export async function handleApplyTags(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -4728,7 +4762,7 @@ export async function handleGoToSavedMessages(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -4880,7 +4914,7 @@ export async function handleForwardToSavedButton(bot, callbackQuery) {
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -4936,7 +4970,7 @@ export async function handleCheckSavedMessages(bot, callbackQuery, saveAsMessage
   const accountId = accountLinker.getActiveAccountId(userId);
   if (!accountId) {
     await safeAnswerCallback(bot, callbackQuery.id, {
-      text: 'No active account found!',
+      text: '🔗 No active account found. Please link or switch to an account first.',
       show_alert: true,
     });
     return;
@@ -4956,7 +4990,7 @@ export async function handleCheckSavedMessages(bot, callbackQuery, saveAsMessage
         bot,
         chatId,
         callbackQuery.message.message_id,
-        '❌ Account client not available. Please try again.',
+        '⚠️ <b>Account Connection Issue</b>\n\nYour account connection is temporarily unavailable.\n\n📝 <b>What to do:</b>\n• Wait a moment and try again\n• Make sure your account is properly linked\n• If the problem persists, try re-linking your account',
         { parse_mode: 'HTML', ...createBackButton() }
       );
       return;

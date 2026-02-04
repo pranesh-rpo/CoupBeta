@@ -584,17 +584,22 @@ class AutomationService {
     }
   }
 
-  async startBroadcast(userId, message) {
+  async startBroadcast(userId, message, accountIdOverride = null) {
     if (!accountLinker.isLinked(userId)) {
       return { success: false, error: 'Account not linked' };
     }
 
-    const accountId = accountLinker.getActiveAccountId(userId);
-    if (!accountId) {
-      return { success: false, error: 'No active account found' };
+    // Allow overriding accountId for restore purposes (to restore broadcasts for inactive accounts)
+    // If not provided, use the active account (normal behavior for user-initiated starts)
+    // CRITICAL: Multiple broadcasts can run in parallel for the same user (one per account)
+    // Each account can have its own broadcast running simultaneously
+    const accountId = accountIdOverride !== null ? accountIdOverride : accountLinker.getActiveAccountId(userId);
+    if (!accountId && accountId !== 0) {
+      return { success: false, error: 'No account found' };
     }
     
-    // Check if there's already a broadcast running for this specific account
+    // Check if there's already a broadcast running for this SPECIFIC account
+    // Note: Other accounts for the same user can have broadcasts running simultaneously
     const broadcastKey = this._getBroadcastKey(userId, accountId);
     
     // Atomic check: prevent race condition if multiple start requests come simultaneously
@@ -605,6 +610,12 @@ class AutomationService {
     const existingBroadcast = this.activeBroadcasts.get(broadcastKey);
     if (existingBroadcast && existingBroadcast.isRunning) {
       return { success: false, error: 'Broadcast already running for this account' };
+    }
+    
+    // Log if user has other broadcasts running (parallel broadcasts)
+    const otherBroadcasts = this.getBroadcastingAccountIds(userId);
+    if (otherBroadcasts.length > 0) {
+      console.log(`[BROADCAST] User ${userId} already has ${otherBroadcasts.length} broadcast(s) running for account(s): ${otherBroadcasts.join(', ')}, starting new broadcast for account ${accountId} - PARALLEL BROADCASTS`);
     }
     
     // Mark as pending to prevent concurrent starts
@@ -1458,16 +1469,17 @@ class AutomationService {
 
   async checkAndResetDailyCap(accountId) {
     try {
+      // Get default from config (now set to 999999, effectively unlimited)
+      const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 999999;
+      
       if (!accountId && accountId !== 0) {
         console.log(`[CAP] Invalid accountId provided: ${accountId}`);
-        const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
         return { canSend: true, dailySent: 0, dailyCap: defaultDailyCap };
       }
       
-      const accountIdNum = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+      const accountIdNum = typeof accountId === 'string' ? parseInt(accountId, 10) : accountId;
       if (isNaN(accountIdNum)) {
         console.log(`[CAP] Could not parse accountId: ${accountId}`);
-        const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
         return { canSend: true, dailySent: 0, dailyCap: defaultDailyCap };
       }
       
@@ -1478,57 +1490,85 @@ class AutomationService {
       
       if (!result || !result.rows || result.rows.length === 0) {
         console.log(`[CAP] Account ${accountIdNum} not found in database`);
-        const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
         return { canSend: true, dailySent: 0, dailyCap: defaultDailyCap };
       }
       
       const account = result.rows[0];
       if (!account) {
-        const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
         return { canSend: true, dailySent: 0, dailyCap: defaultDailyCap };
       }
       
-      // Get today's date in IST timezone
+      // Get today's date in IST (UTC + 5 hours 30 minutes)
       const now = new Date();
-      const istDateStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // en-CA gives YYYY-MM-DD format
-      const capResetDate = account.cap_reset_date ? new Date(account.cap_reset_date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : null;
+      // Add 5 hours 30 minutes (5.5 hours = 19800000 milliseconds) to UTC time for IST
+      const istOffsetMs = (5 * 60 * 60 * 1000) + (30 * 60 * 1000); // 5 hours 30 minutes in milliseconds
+      const istTime = new Date(now.getTime() + istOffsetMs);
+      // Format as YYYY-MM-DD (en-CA format)
+      const istYear = istTime.getUTCFullYear();
+      const istMonth = String(istTime.getUTCMonth() + 1).padStart(2, '0');
+      const istDay = String(istTime.getUTCDate()).padStart(2, '0');
+      const istDateStr = `${istYear}-${istMonth}-${istDay}`;
+      
+      // Safely parse cap_reset_date - handle various date formats
+      // The stored date is already in IST format (YYYY-MM-DD string), so we can use it directly
+      let capResetDate = null;
+      if (account.cap_reset_date) {
+        try {
+          // If it's already a string in YYYY-MM-DD format, use it directly
+          if (typeof account.cap_reset_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(account.cap_reset_date)) {
+            capResetDate = account.cap_reset_date;
+          } else {
+            // If it's a Date object or other format, parse and convert to IST
+            const resetDate = new Date(account.cap_reset_date);
+            if (!isNaN(resetDate.getTime())) {
+              // Add IST offset to the stored date for comparison
+              const resetDateIST = new Date(resetDate.getTime() + istOffsetMs);
+              const resetYear = resetDateIST.getUTCFullYear();
+              const resetMonth = String(resetDateIST.getUTCMonth() + 1).padStart(2, '0');
+              const resetDay = String(resetDateIST.getUTCDate()).padStart(2, '0');
+              capResetDate = `${resetYear}-${resetMonth}-${resetDay}`;
+            }
+          }
+        } catch (dateError) {
+          // Invalid date format, treat as null (will trigger reset)
+          console.log(`[CAP] Invalid cap_reset_date format for account ${accountIdNum}, will reset`);
+        }
+      }
       
       // Reset if it's a new day (in IST)
       if (capResetDate !== istDateStr) {
         try {
           // Use IST date for cap reset
           await db.query(
-            'UPDATE accounts SET daily_sent = 0, cap_reset_date = ? WHERE account_id = ?',
+            'UPDATE accounts SET daily_sent = 0, cap_reset_date = $1 WHERE account_id = $2',
             [istDateStr, accountIdNum]
           );
-          loggingService.logInfo(accountIdNum, `Daily cap reset - new day started`, null);
-          // Use account's daily_cap or default from config
-          const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
-          const accountDailyCap = parseInt(account.daily_cap) || defaultDailyCap;
+          loggingService.logInfo(accountIdNum, `Daily counter reset - new day started`, null);
+          // Use account's daily_cap or default from config (for display purposes only)
+          const parsedCap = account.daily_cap != null ? parseInt(account.daily_cap, 10) : NaN;
+          const accountDailyCap = (!isNaN(parsedCap) && parsedCap > 0) ? parsedCap : defaultDailyCap;
           return { canSend: true, dailySent: 0, dailyCap: accountDailyCap };
         } catch (updateError) {
-          logError(`[CAP ERROR] Error resetting daily cap:`, updateError);
+          logError(`[CAP ERROR] Error resetting daily counter:`, updateError);
           // Continue with current values if reset fails
         }
       }
       
-      const dailySent = parseInt(account.daily_sent) || 0;
-      // Use account's daily_cap or default from config, with maximum safety limit
-      const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
-      const accountDailyCap = parseInt(account.daily_cap) || defaultDailyCap;
-      const maxAllowedCap = Math.max(defaultDailyCap, 2000); // Safety maximum
-      const dailyCap = Math.min(accountDailyCap, maxAllowedCap);
-      const canSend = dailySent < dailyCap;
-      
-      if (!canSend) {
-        console.log(`[DAILY_CAP] ⚠️ Daily limit reached for account ${accountId}: ${dailySent}/${dailyCap} messages`);
-      }
+      // Safely parse daily_sent - handle null, undefined, or invalid values
+      const dailySent = (account.daily_sent != null && !isNaN(parseInt(account.daily_sent, 10))) 
+        ? parseInt(account.daily_sent, 10) 
+        : 0;
+      // Use account's daily_cap or default from config (for display purposes only)
+      // Daily cap enforcement removed - always allow sending
+      const parsedCap = account.daily_cap != null ? parseInt(account.daily_cap, 10) : NaN;
+      const accountDailyCap = (!isNaN(parsedCap) && parsedCap > 0) ? parsedCap : defaultDailyCap;
+      const dailyCap = accountDailyCap;
+      const canSend = true; // Always allow sending - cap enforcement removed
       
       return { canSend, dailySent, dailyCap };
     } catch (error) {
-      logError(`[CAP ERROR] Error checking daily cap for account ${accountId}:`, error);
-      // Use configurable default on error
-      const defaultDailyCap = config.antiFreeze.maxMessagesPerDay || 1500;
+      logError(`[CAP ERROR] Error checking daily counter for account ${accountId}:`, error);
+      // Use configurable default on error (defaultDailyCap already defined at top)
       return { canSend: true, dailySent: 0, dailyCap: defaultDailyCap };
     }
   }
@@ -1540,7 +1580,7 @@ class AutomationService {
         return;
       }
       
-      const accountIdNum = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+      const accountIdNum = typeof accountId === 'string' ? parseInt(accountId, 10) : accountId;
       if (isNaN(accountIdNum)) {
         console.log(`[CAP] Could not parse accountId for increment: ${accountId}`);
         return;
@@ -1612,12 +1652,19 @@ class AutomationService {
       return;
     }
 
-    // Note: We do NOT stop broadcast if account is switched
+    // CRITICAL: We do NOT stop broadcast if account is switched
     // Broadcasts are independent per account and should continue even if user switches to another account
+    // Multiple broadcasts can run in parallel for the same user (one per account)
     // The broadcast will continue for the accountId that started it, regardless of which account is currently active
     const activeAccountId = accountLinker.getActiveAccountId(userId);
     if (activeAccountId !== accountId) {
-      console.log(`[BROADCAST] Account ${accountId} is no longer active for user ${userId} (active: ${activeAccountId}), but continuing broadcast for account ${accountId}`);
+      console.log(`[BROADCAST] Account ${accountId} is no longer active for user ${userId} (active: ${activeAccountId}), but continuing broadcast for account ${accountId} - PARALLEL BROADCASTS ENABLED`);
+    }
+    
+    // Log parallel broadcast status
+    const allBroadcasts = this.getBroadcastingAccountIds(userId);
+    if (allBroadcasts.length > 1) {
+      console.log(`[BROADCAST] User ${userId} has ${allBroadcasts.length} parallel broadcasts running: ${allBroadcasts.join(', ')}`);
     }
     
     // broadcastKey is already declared above (line 442)
@@ -1631,22 +1678,39 @@ class AutomationService {
     let client = null;
     try {
       // Connect client on-demand (only when sending messages)
+      // CRITICAL: This works for both active and inactive accounts - accountId is explicitly provided
       try {
         client = await accountLinker.getClientAndConnect(userId, accountId);
         if (!client) {
-          logError(`[BROADCAST ERROR] Client not available for user ${userId}, account ${accountId}`);
-          // Stop broadcast if client is not available (account might have been deleted)
-          await this.stopBroadcast(userId, accountId);
-          return;
+          // Check if account still exists by trying to get the client directly
+          // If getClient returns null, the account doesn't exist and we should stop the broadcast
+          const accountClient = accountLinker.getClient(userId, accountId);
+          if (!accountClient) {
+            // Account was deleted or doesn't exist, stop broadcast
+            logError(`[BROADCAST ERROR] Account ${accountId} not found (getClient returned null), stopping broadcast for user ${userId}`);
+            await this.stopBroadcast(userId, accountId);
+            return;
+          }
+          // Account exists but connection failed - log and skip this cycle, but don't stop broadcast
+          // The next cycle will retry the connection
+          logError(`[BROADCAST ERROR] Client connection failed for user ${userId}, account ${accountId} (account exists, will retry next cycle)`);
+          console.log(`[BROADCAST] Skipping this cycle for account ${accountId}, will retry connection next cycle`);
+          return; // Skip this cycle but keep broadcast running
         }
-        console.log(`[BROADCAST] Connected client for account ${accountId} to send messages`);
+        const isInactive = accountLinker.getActiveAccountId(userId) !== accountId;
+        console.log(`[BROADCAST] Connected client for account ${accountId} to send messages (inactive: ${isInactive ? 'yes' : 'no'})`);
       } catch (connectError) {
-        logError(`[BROADCAST ERROR] Failed to connect client for user ${userId}:`, connectError);
+        logError(`[BROADCAST ERROR] Failed to connect client for user ${userId}, account ${accountId}:`, connectError);
         // Check if account was deleted or session revoked
-        if (connectError.message && (connectError.message.includes('not found') || connectError.message.includes('Account'))) {
-          // Account might have been deleted, stop broadcast
-          console.log(`[BROADCAST] Account ${accountId} not found, stopping broadcast for user ${userId}`);
+        const errorMsg = connectError.message || '';
+        if (errorMsg.includes('not found') || errorMsg.includes('Account') || errorMsg.includes('SESSION_REVOKED')) {
+          // Account was deleted or session revoked, stop broadcast
+          console.log(`[BROADCAST] Account ${accountId} not found or session revoked, stopping broadcast for user ${userId}`);
           await this.stopBroadcast(userId, accountId);
+        } else {
+          // Temporary connection error - log and skip this cycle, but don't stop broadcast
+          // The next cycle will retry
+          console.log(`[BROADCAST] Temporary connection error for account ${accountId}, skipping this cycle (will retry next cycle)`);
         }
         return;
       }
@@ -1886,22 +1950,11 @@ class AutomationService {
           }
           
           // OPTIMIZATION: Check daily cap once per cycle (not per group) to reduce database calls
-          // Only check on first group, then cache the result
+          // Only check on first group for tracking purposes (daily cap enforcement removed)
           if (i === 0) {
             const dailyCapCheck = await this.checkAndResetDailyCap(accountId);
             broadcast.cachedDailyCapCheck = dailyCapCheck;
-            if (!dailyCapCheck.canSend) {
-              console.log(`[DAILY_CAP] ⚠️ Daily message limit reached for account ${accountId}: ${dailyCapCheck.dailySent}/${dailyCapCheck.dailyCap}. Skipping all groups.`);
-              // Don't stop broadcast, just skip this cycle - will resume tomorrow
-              break;
-            }
-          } else {
-            // Use cached daily cap check for subsequent groups
-            const dailyCapCheck = broadcast.cachedDailyCapCheck;
-            if (dailyCapCheck && !dailyCapCheck.canSend) {
-              // This shouldn't happen if we checked on first group, but handle it anyway
-              break;
-            }
+            // Daily cap enforcement removed - always allow sending
           }
           
           // SAFETY CHECK: Check global rate limits before sending
@@ -2231,7 +2284,7 @@ class AutomationService {
                   if (me && me.id) {
                     excludeUserId = typeof me.id === 'object' && me.id.value ? Number(me.id.value) :
                                    typeof me.id === 'number' ? me.id :
-                                   typeof me.id === 'bigint' ? Number(me.id) : parseInt(me.id);
+                                   typeof me.id === 'bigint' ? Number(me.id) : parseInt(me.id, 10);
                       cachedExcludeUserId = excludeUserId; // Cache for next groups
                       meCached = true;
                       console.log(`[BROADCAST] Cached own user ID for mentions: ${excludeUserId}`);
@@ -2373,7 +2426,7 @@ class AutomationService {
                   for (const entity of sortedEntities) {
                     const userIdValue = typeof entity.userId === 'bigint' ? Number(entity.userId) : 
                                       typeof entity.userId === 'number' ? entity.userId : 
-                                      parseInt(entity.userId);
+                                      parseInt(entity.userId, 10);
                     
                     if (isNaN(userIdValue)) {
                       console.log(`[BROADCAST] Invalid userId: ${entity.userId}, skipping`);
@@ -3080,7 +3133,7 @@ class AutomationService {
                   for (const entity of sortedEntities) {
                     const userIdValue = typeof entity.userId === 'bigint' ? Number(entity.userId) : 
                                       typeof entity.userId === 'number' ? entity.userId : 
-                                      parseInt(entity.userId);
+                                      parseInt(entity.userId, 10);
                     if (!isNaN(userIdValue)) {
                       const before = htmlMessage.substring(0, entity.offset);
                       const after = htmlMessage.substring(entity.offset + entity.length);
@@ -3435,7 +3488,8 @@ class AutomationService {
         const userId = row.user_id;
 
         try {
-          // Check if account is still linked and active
+          // Check if account is still linked (but don't require it to be active)
+          // Broadcasts should continue running for all accounts, not just the active one
           if (!accountLinker.isLinked(userId)) {
             console.log(`[BROADCAST_RESTORE] User ${userId} is not linked, skipping account ${accountId}`);
             // Reset flag since account is not linked
@@ -3444,14 +3498,12 @@ class AutomationService {
             continue;
           }
 
-          // Check if this account is still the active account for the user
+          // Note: We do NOT check if account is active - broadcasts should continue
+          // running for all accounts regardless of which one is currently active.
+          // This allows users to switch accounts while broadcasts continue in parallel.
           const activeAccountId = accountLinker.getActiveAccountId(userId);
           if (activeAccountId !== accountId) {
-            console.log(`[BROADCAST_RESTORE] Account ${accountId} is not active for user ${userId}, skipping`);
-            // Reset flag since account is not active
-            await db.query('UPDATE accounts SET is_broadcasting = 0 WHERE account_id = ?', [accountId]);
-            failed++;
-            continue;
+            console.log(`[BROADCAST_RESTORE] Account ${accountId} is not active for user ${userId} (active: ${activeAccountId}), but restoring broadcast anyway to allow parallel broadcasts`);
           }
 
           // Wait a bit for account linker to fully initialize clients
@@ -3491,7 +3543,9 @@ class AutomationService {
           }
           
           try {
-            const restoreResult = await this.startBroadcast(userId, null);
+            // Pass accountId explicitly to restore broadcast for this specific account
+            // even if it's not the currently active account
+            const restoreResult = await this.startBroadcast(userId, null, accountId);
 
             if (restoreResult && restoreResult.success) {
               console.log(`[BROADCAST_RESTORE] ✅ Successfully restored broadcast for user ${userId}, account ${accountId}`);

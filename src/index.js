@@ -11,7 +11,7 @@ import automationService from './services/automationService.js';
 // Note: automationService is already imported above, using it for blockedUsers tracking
 import logger, { colors, logError } from './utils/logger.js';
 import { safeAnswerCallback } from './utils/safeEdit.js';
-import { isFloodWaitError, extractWaitTime, waitForFloodError, safeBotApiCall } from './utils/floodWaitHandler.js';
+import { isFloodWaitError, extractWaitTime, waitForFloodError, safeBotApiCall, isNetworkError } from './utils/floodWaitHandler.js';
 import { validateUserId, validateAccountId, sanitizeCallbackData, validateCallbackData, sanitizeErrorMessage, getUserFriendlyErrorMessage, adminCommandRateLimiter, verifyAccountOwnership, sanitizeString } from './utils/security.js';
 import fs from 'fs';
 import path from 'path';
@@ -1090,7 +1090,7 @@ bot.onText(/\/abroadcast(?:\s+(.+))?/, async (msg) => {
     console.error('[ADMIN_BROADCAST] Error:', error);
     logger.logError('ADMIN_BROADCAST', userId, error, 'Admin broadcast error');
     // SECURITY: Use generic error message for users
-    await bot.sendMessage(chatId, `❌ Error: ${getUserFriendlyErrorMessage()}`);
+    await bot.sendMessage(chatId, getUserFriendlyErrorMessage(), { parse_mode: 'HTML' });
   }
 });
 
@@ -1251,7 +1251,7 @@ bot.onText(/\/abroadcast_last/, async (msg) => {
   } catch (error) {
     console.error('[ADMIN_BROADCAST] Error:', error);
     logger.logError('ADMIN_BROADCAST', userId, error, 'Resend last broadcast error');
-    await bot.sendMessage(chatId, `❌ Error: ${getUserFriendlyErrorMessage()}`);
+    await bot.sendMessage(chatId, getUserFriendlyErrorMessage(), { parse_mode: 'HTML' });
   }
 });
 
@@ -1625,7 +1625,22 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, errorMsg, { parse_mode: 'HTML', ...createMainMenu() });
       }
     }
-  } else if (pendingPasswords.has(userId) || accountLinker.isPasswordRequired(userId)) {
+  } else if (pendingPasswords.has(userId) || accountLinker.isPasswordRequired(userId) || accountLinker.isWebLoginPasswordRequired(userId)) {
+    // Check if accountLinker actually has pending password auth (to avoid stale pendingPasswords state)
+    const hasValidAuthState = accountLinker.isPasswordRequired(userId) || accountLinker.isWebLoginPasswordRequired(userId);
+    
+    // If pendingPasswords exists but accountLinker doesn't have the state, clear stale state
+    if (pendingPasswords.has(userId) && !hasValidAuthState) {
+      console.log(`[2FA] Clearing stale pendingPasswords state for user ${userId} - accountLinker state not found`);
+      pendingPasswords.delete(userId);
+      await bot.sendMessage(
+        chatId,
+        '⏰ <b>Authentication Session Expired</b>\n\nYour password authentication session has timed out for security reasons.\n\n📝 <b>What to do:</b>\n• Click "🔗 Link Account" to start over\n• You\'ll go through the verification process again\n• Have your password ready when prompted',
+        { parse_mode: 'HTML', ...createMainMenu() }
+      ).catch(() => {});
+      return; // Exit early, don't process password
+    }
+    
     // Get stored data (message ID to edit)
     const pendingData = pendingPasswords.get(userId);
     const password = msg.text?.trim();
@@ -1635,19 +1650,19 @@ bot.on('message', async (msg) => {
     
     if (password) {
       const result = await handlePasswordInput(bot, msg, password, pendingData?.messageId);
-      // Only remove pending state if password was successful or max attempts/cooldown reached
-      if (result && (result.success || result.maxAttemptsReached)) {
+      // Remove pending state if password was successful, max attempts reached, or stale state detected
+      if (result && (result.success || result.maxAttemptsReached || result.staleState)) {
         pendingPasswords.delete(userId);
       }
     } else {
       // Edit existing message to show error
       if (pendingData?.messageId) {
         await bot.editMessageText(
-          '❌ Please provide a valid password.\n\nTry the "Link Account" button again.',
-          { chat_id: chatId, message_id: pendingData.messageId, ...createMainMenu() }
+          '🔐 <b>Password Required</b>\n\nPlease enter your 2FA password to continue.\n\n📝 <b>What to do:</b>\n• Enter your account password\n• Make sure it\'s correct\n• If you need to start over, click "🔗 Link Account"',
+          { chat_id: chatId, message_id: pendingData.messageId, parse_mode: 'HTML', ...createMainMenu() }
         ).catch(() => {});
       } else {
-        await bot.sendMessage(chatId, '❌ Please provide a valid password.\n\nTry the "Link Account" button again.', createMainMenu());
+        await bot.sendMessage(chatId, '🔐 <b>Password Required</b>\n\nPlease enter your 2FA password to continue.\n\n📝 <b>What to do:</b>\n• Enter your account password\n• Make sure it\'s correct\n• If you need to start over, click "🔗 Link Account"', { parse_mode: 'HTML', ...createMainMenu() });
       }
       // Don't remove pending state for invalid input, allow retry
     }
@@ -1661,12 +1676,16 @@ bot.on('message', async (msg) => {
       await safeDeleteMessage(chatId, msg.message_id);
       // User sent password, handle it
       const pendingData = pendingPasswords.get(userId);
-      await handlePasswordInput(bot, msg, password, pendingData?.messageId);
+      const result = await handlePasswordInput(bot, msg, password, pendingData?.messageId);
+      // Remove pending state if password was successful, max attempts reached, or stale state detected
+      if (result && (result.success || result.maxAttemptsReached || result.staleState)) {
+        pendingPasswords.delete(userId);
+      }
     } else if (notification && !notification.notified) {
       // Notify user that 2FA password is needed (only once)
       const pwMsg = await bot.sendMessage(
         notification.chatId,
-        '🔐 <b>2FA Password Required</b>\n\n🔒 Your account has two-factor authentication enabled.\n\nPlease enter your 2FA password to complete the login:',
+        '🔐 <b>2FA Password Required</b>\n\n🔒 Your account has two-factor authentication enabled.\n\n📝 <b>What to do:</b>\n• Enter your 2FA password below\n• This is the password you set up for your Telegram account\n• Make sure you enter it correctly',
         { parse_mode: 'HTML' }
       );
       accountLinker.markWebLoginPasswordNotified(userId);
@@ -2264,6 +2283,7 @@ bot.on('callback_query', async (callbackQuery) => {
 bot.on('polling_error', (error) => {
   const errorMessage = error.message || error.toString() || '';
   const errorCode = error.code || error.response?.error_code;
+  const errorName = error.name || '';
   
   // Check if it's a 409 Conflict (multiple bot instances polling)
   // This is not a critical error - just means another instance is using the bot token
@@ -2271,6 +2291,15 @@ bot.on('polling_error', (error) => {
       errorMessage.includes('terminated by other getUpdates request')) {
     // Silently ignore - this is expected when multiple instances are running
     // Don't log as error to avoid spam
+    return;
+  }
+  
+  // Check if it's a network error (AggregateError, RequestError, connection issues)
+  // These are transient and expected - Telegram bot library will automatically retry
+  if (isNetworkError(error) || errorName === 'AggregateError' || errorName === 'RequestError') {
+    // Log as info/warning instead of error - these are expected transient network issues
+    console.warn(`[POLLING] ⚠️ Network error during polling (will retry automatically): ${errorMessage.substring(0, 100)}`);
+    // Don't log as critical error - network issues are transient and the bot will retry
     return;
   }
   
@@ -2285,6 +2314,7 @@ bot.on('polling_error', (error) => {
       logger.logError('POLLING_FLOOD_WAIT', null, error, 'Polling rate limited (unknown wait time)');
     }
   } else {
+    // Only log non-network, non-flood-wait errors as critical
     logger.logError('POLLING', null, error, 'Telegram polling error');
   }
 });

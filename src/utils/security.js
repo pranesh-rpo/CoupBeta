@@ -157,10 +157,131 @@ export function validateTableName(tableName, allowedTables) {
 
 /**
  * Get user-friendly error message (never shows technical details)
- * @returns {string} Generic error message for users
+ * @param {Error|string} error - Optional error object or message to map to user-friendly message
+ * @returns {string} User-friendly error message
  */
-export function getUserFriendlyErrorMessage() {
-  return 'An error occurred. Please try again later or contact support if the problem persists.';
+export function getUserFriendlyErrorMessage(error = null) {
+  // If no error provided, return generic message
+  if (!error) {
+    return 'An error occurred. Please try again later or contact support if the problem persists.';
+  }
+
+  // Extract error message
+  let errorMessage = '';
+  if (error instanceof Error) {
+    errorMessage = error.message || '';
+  } else if (typeof error === 'string') {
+    errorMessage = error;
+  } else {
+    return 'An error occurred. Please try again later or contact support if the problem persists.';
+  }
+
+  // Normalize error message for comparison (case-insensitive)
+  const normalizedError = errorMessage.toLowerCase().trim();
+
+  // Map specific errors to user-friendly messages
+  const errorMappings = [
+    {
+      // Phone number already linked to another account that is broadcasting
+      pattern: /phone number.*already linked.*another account.*broadcasting/i,
+      message: '⚠️ <b>Account Already in Use</b>\n\nThis phone number is already linked to another account that is currently broadcasting.\n\n📝 <b>What to do:</b>\n1. Stop the broadcast on the other account first\n2. Or contact support for assistance\n\nYou can try linking again after stopping the broadcast.'
+    },
+    {
+      // Phone number already linked (general)
+      pattern: /phone number.*already linked/i,
+      message: '⚠️ <b>Phone Number Already Linked</b>\n\nThis phone number is already linked to another account.\n\n📝 <b>What to do:</b>\n• If this is your account, try using a different phone number\n• Or contact support for assistance'
+    },
+    {
+      // Account conflict
+      pattern: /account.*conflict|already.*broadcasting/i,
+      message: '⚠️ <b>Account Conflict</b>\n\nThis account is already in use by another user or is currently broadcasting.\n\n📝 <b>What to do:</b>\n• Stop any active broadcasts first\n• Or contact support for assistance'
+    },
+    {
+      // Password verification failed (generic)
+      pattern: /password.*verification.*failed|invalid.*password|incorrect.*password/i,
+      message: '❌ <b>Password Incorrect</b>\n\nThe 2FA password you entered is incorrect.\n\n📝 <b>What to do:</b>\n• Double-check your password and try again\n• Make sure you\'re entering the correct 2FA password for this account'
+    },
+    {
+      // Rate limited / flood wait - check for specific wait time
+      pattern: /rate.*limit.*wait|rate.*limited.*wait/i,
+      message: (errorMsg) => {
+        // Extract wait time from error message
+        // Format: "Rate limited by Telegram. Please wait 1 minute(s) (60 seconds) before requesting a new code."
+        const minuteMatch = errorMsg.match(/(\d+)\s*minute/i);
+        const secondMatch = errorMsg.match(/(\d+)\s*second/i);
+        const waitMinutes = minuteMatch ? parseInt(minuteMatch[1]) : null;
+        const waitSeconds = secondMatch ? parseInt(secondMatch[1]) : null;
+        
+        if (waitMinutes !== null || waitSeconds !== null) {
+          // Prefer showing minutes if available, otherwise show seconds
+          let displayTime;
+          if (waitMinutes !== null) {
+            displayTime = `${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''}`;
+            if (waitSeconds !== null && waitSeconds % 60 !== 0) {
+              displayTime += ` (${waitSeconds} seconds)`;
+            }
+          } else {
+            displayTime = `${waitSeconds} second${waitSeconds !== 1 ? 's' : ''}`;
+          }
+          return `⏳ <b>Rate Limited</b>\n\nTelegram has rate limited your requests.\n\n⏰ <b>Wait Time:</b> ${displayTime}\n\n📝 <b>What to do:</b>\n• Please wait the specified time before trying again\n• Do not repeatedly click the link button\n• Telegram limits how often you can request verification codes`;
+        }
+        return '⏳ <b>Too Many Requests</b>\n\nYou\'ve made too many requests too quickly.\n\n📝 <b>What to do:</b>\n• Please wait a few minutes before trying again\n• Telegram limits how often you can perform certain actions';
+      }
+    },
+    {
+      // Rate limited / flood wait (generic fallback)
+      pattern: /rate.*limit|flood.*wait|too.*many.*requests/i,
+      message: '⏳ <b>Too Many Requests</b>\n\nYou\'ve made too many requests too quickly.\n\n📝 <b>What to do:</b>\n• Please wait a few minutes before trying again\n• Telegram limits how often you can perform certain actions'
+    },
+    {
+      // Connection errors
+      pattern: /connection.*error|network.*error|failed.*to.*connect/i,
+      message: '🔌 <b>Connection Error</b>\n\nUnable to connect to Telegram servers.\n\n📝 <b>What to do:</b>\n• Check your internet connection\n• Wait a moment and try again\n• If the problem persists, contact support'
+    },
+    {
+      // Session errors
+      pattern: /session.*expired|session.*invalid|session.*error/i,
+      message: '🔐 <b>Session Error</b>\n\nYour session has expired or is invalid.\n\n📝 <b>What to do:</b>\n• Please start the account linking process again\n• Make sure you\'re using the correct phone number'
+    },
+    {
+      // Code expired
+      pattern: /code.*expired|verification.*code.*expired/i,
+      message: '⏰ <b>Code Expired</b>\n\nThe verification code has expired.\n\n📝 <b>What to do:</b>\n• Request a new verification code\n• Enter the code quickly after receiving it'
+    },
+    {
+      // Invalid code
+      pattern: /invalid.*code|wrong.*code|incorrect.*code/i,
+      message: '❌ <b>Invalid Code</b>\n\nThe verification code you entered is incorrect.\n\n📝 <b>What to do:</b>\n• Double-check the code from Telegram\n• Make sure you\'re entering all digits correctly\n• Request a new code if needed'
+    },
+    {
+      // Phone number invalid
+      pattern: /invalid.*phone|phone.*number.*invalid/i,
+      message: '📱 <b>Invalid Phone Number</b>\n\nThe phone number format is incorrect.\n\n📝 <b>What to do:</b>\n• Use international format: +1234567890\n• Include country code with + prefix\n• Make sure there are no spaces or special characters'
+    }
+  ];
+
+  // Check each mapping pattern
+  for (const mapping of errorMappings) {
+    if (mapping.pattern.test(normalizedError)) {
+      // If message is a function, call it with the error message
+      if (typeof mapping.message === 'function') {
+        return mapping.message(errorMessage);
+      }
+      return mapping.message;
+    }
+  }
+
+  // If no specific mapping found, check for common technical terms and provide generic guidance
+  if (normalizedError.includes('database') || normalizedError.includes('sql')) {
+    return '💾 <b>Database Error</b>\n\nA database error occurred.\n\n📝 <b>What to do:</b>\n• Please try again in a moment\n• If the problem persists, contact support';
+  }
+
+  if (normalizedError.includes('timeout') || normalizedError.includes('timed out')) {
+    return '⏱️ <b>Request Timeout</b>\n\nThe request took too long to complete.\n\n📝 <b>What to do:</b>\n• Check your internet connection\n• Try again in a moment\n• If the problem persists, contact support';
+  }
+
+  // Default: return generic message (don't expose technical details)
+  return '❌ <b>Something Went Wrong</b>\n\nAn error occurred during the operation.\n\n📝 <b>What to do:</b>\n• Please try again in a moment\n• Make sure you\'re following the correct steps\n• If the problem persists, contact support for assistance';
 }
 
 /**

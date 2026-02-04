@@ -6,6 +6,7 @@
 
 import db from '../database/db.js';
 import logger from '../utils/logger.js';
+import { config } from '../config.js';
 
 class ConfigService {
   /**
@@ -48,8 +49,12 @@ class ConfigService {
       const row = result.rows[0];
       return {
         manualInterval: row.manual_interval,
-        dailyCap: row.daily_cap || 1500,
-        dailySent: row.daily_sent || 0,
+        dailyCap: (row.daily_cap != null && row.daily_cap !== 0) 
+          ? parseInt(row.daily_cap, 10) 
+          : (config.antiFreeze.maxMessagesPerDay || 999999),
+        dailySent: (row.daily_sent != null && !isNaN(parseInt(row.daily_sent, 10))) 
+          ? parseInt(row.daily_sent, 10) 
+          : 0,
         capResetDate: row.cap_reset_date,
         quietStart: row.quiet_start,
         quietEnd: row.quiet_end,
@@ -125,22 +130,27 @@ class ConfigService {
   }
 
   /**
-   * Set daily message cap
+   * Set daily message cap (for display purposes only - enforcement removed)
    * @param {number} accountId - Account ID
-   * @param {number} cap - Daily cap (1-1000)
+   * @param {number} cap - Daily cap (minimum 1, no maximum limit)
    */
   async setDailyCap(accountId, cap) {
     try {
-      if (cap < 1 || cap > 1000) {
-        return { success: false, error: 'Daily cap must be between 1 and 1000' };
+      // Validate input type and value
+      const capNum = typeof cap === 'string' ? parseInt(cap, 10) : cap;
+      if (isNaN(capNum) || !Number.isInteger(capNum)) {
+        return { success: false, error: 'Daily cap must be a valid number' };
+      }
+      if (capNum < 1) {
+        return { success: false, error: 'Daily cap must be at least 1' };
       }
       
       await db.query(
         'UPDATE accounts SET daily_cap = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2',
-        [cap, accountId]
+        [capNum, accountId]
       );
       
-      logger.logChange('CONFIG', accountId, `Daily cap set to ${cap}`);
+      logger.logChange('CONFIG', accountId, `Daily cap set to ${capNum} (display only - no enforcement)`);
       return { success: true };
     } catch (error) {
       logger.logError('CONFIG', accountId, error, 'Failed to set daily cap');
