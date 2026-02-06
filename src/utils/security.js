@@ -202,24 +202,33 @@ export function getUserFriendlyErrorMessage(error = null) {
       message: '❌ <b>Password Incorrect</b>\n\nThe 2FA password you entered is incorrect.\n\n📝 <b>What to do:</b>\n• Double-check your password and try again\n• Make sure you\'re entering the correct 2FA password for this account'
     },
     {
-      // Rate limited / flood wait - check for specific wait time
-      pattern: /rate.*limit.*wait|rate.*limited.*wait/i,
+      // Rate limited - extract and display wait time (must be checked before generic rate limit)
+      // Matches: "Rate limited by Telegram. Please wait 1 minute(s) (60 seconds) before..."
+      pattern: /rate\s*limited|rate\s*limit/i,
       message: (errorMsg) => {
         // Extract wait time from error message
-        // Format: "Rate limited by Telegram. Please wait 1 minute(s) (60 seconds) before requesting a new code."
+        // Formats: "1 minute(s) (60 seconds)", "2 minute(s) (120 seconds)", "(45 seconds)", etc.
         const minuteMatch = errorMsg.match(/(\d+)\s*minute/i);
         const secondMatch = errorMsg.match(/(\d+)\s*second/i);
-        const waitMinutes = minuteMatch ? parseInt(minuteMatch[1]) : null;
-        const waitSeconds = secondMatch ? parseInt(secondMatch[1]) : null;
-        
+        const waitMinutes = minuteMatch ? parseInt(minuteMatch[1], 10) : null;
+        const waitSeconds = secondMatch ? parseInt(secondMatch[1], 10) : null;
+
         if (waitMinutes !== null || waitSeconds !== null) {
-          // Prefer showing minutes if available, otherwise show seconds
+          // Build user-friendly display: prefer minutes when meaningful, add seconds for partial minutes
           let displayTime;
-          if (waitMinutes !== null) {
-            displayTime = `${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''}`;
-            if (waitSeconds !== null && waitSeconds % 60 !== 0) {
-              displayTime += ` (${waitSeconds} seconds)`;
+          if (waitMinutes !== null && waitSeconds !== null) {
+            // Both present - use clearest format (e.g., "1 minute" not "1 minute (60 seconds)")
+            if (waitSeconds % 60 === 0) {
+              displayTime = `${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''}`;
+            } else {
+              // Partial minutes: "1 minute 30 seconds" or "90 seconds"
+              const totalSeconds = waitMinutes * 60 + (waitSeconds % 60);
+              displayTime = totalSeconds >= 60
+                ? `${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''} ${waitSeconds % 60} second${(waitSeconds % 60) !== 1 ? 's' : ''}`.trim()
+                : `${waitSeconds} second${waitSeconds !== 1 ? 's' : ''}`;
             }
+          } else if (waitMinutes !== null) {
+            displayTime = `${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''}`;
           } else {
             displayTime = `${waitSeconds} second${waitSeconds !== 1 ? 's' : ''}`;
           }
@@ -229,8 +238,8 @@ export function getUserFriendlyErrorMessage(error = null) {
       }
     },
     {
-      // Rate limited / flood wait (generic fallback)
-      pattern: /rate.*limit|flood.*wait|too.*many.*requests/i,
+      // Rate limited / flood wait (generic fallback - no time in message)
+      pattern: /flood.*wait|too.*many.*requests/i,
       message: '⏳ <b>Too Many Requests</b>\n\nYou\'ve made too many requests too quickly.\n\n📝 <b>What to do:</b>\n• Please wait a few minutes before trying again\n• Telegram limits how often you can perform certain actions'
     },
     {

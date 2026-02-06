@@ -559,6 +559,12 @@ class AutoReplyHandler {
               // Silently fail - don't block auto-reply if logging fails
             }
           } catch (sendError) {
+            const errorMsg = sendError.message || sendError.toString() || '';
+            // Handle disconnection errors gracefully
+            if (errorMsg.includes('disconnected') || errorMsg.includes('not connected') || errorMsg.includes('Cannot send requests while disconnected') || errorMsg.includes('No workers running')) {
+              console.log(`[AUTO_REPLY] Client disconnected during DM reply send for account ${accountId}: ${errorMsg}`);
+              return; // Silently skip - will retry on next message
+            }
             console.error(`[AUTO_REPLY] Error sending DM auto-reply:`, sendError.message);
             logError(`[AUTO_REPLY] Error sending DM auto-reply:`, sendError);
           }
@@ -714,6 +720,12 @@ class AutoReplyHandler {
               // Silently fail - don't block auto-reply if logging fails
             }
           } catch (sendError) {
+            const errorMsg = sendError.message || sendError.toString() || '';
+            // Handle disconnection errors gracefully
+            if (errorMsg.includes('disconnected') || errorMsg.includes('not connected') || errorMsg.includes('Cannot send requests while disconnected') || errorMsg.includes('No workers running')) {
+              console.log(`[AUTO_REPLY] Client disconnected during group reply send for account ${accountId}: ${errorMsg}`);
+              return; // Silently skip - will retry on next message
+            }
             console.error(`[AUTO_REPLY] Error sending group auto-reply:`, sendError.message);
             logError(`[AUTO_REPLY] Error sending group auto-reply:`, sendError);
           }
@@ -724,12 +736,17 @@ class AutoReplyHandler {
         return;
       }
     } catch (error) {
+      const errorMsg = error.message || error.toString() || '';
+      
       // Silently ignore common recoverable errors
-      if (error.message && (
-        error.message.includes('CHAT_ID_INVALID') ||
-        error.message.includes('USER_DEACTIVATED') ||
-        error.message.includes('PEER_ID_INVALID')
-      )) {
+      if (errorMsg.includes('CHAT_ID_INVALID') ||
+          errorMsg.includes('USER_DEACTIVATED') ||
+          errorMsg.includes('PEER_ID_INVALID') ||
+          errorMsg.includes('disconnected') ||
+          errorMsg.includes('not connected') ||
+          errorMsg.includes('Cannot send requests while disconnected') ||
+          errorMsg.includes('No workers running')) {
+        console.log(`[AUTO_REPLY] Recoverable error for account ${accountId}: ${errorMsg.substring(0, 100)}`);
         return;
       }
       logError(`[AUTO_REPLY] Error processing message:`, error);
