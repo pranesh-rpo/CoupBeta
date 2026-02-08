@@ -737,11 +737,10 @@ class AutomationService {
                 await configService.updateMessagePoolLastIndex(accountId, result.nextIndex);
               }
             } else if (poolMode === 'sequential') {
-              // Sequential mode: use message index based on group index
-              // This will be handled per-group in sendSingleMessageToAllGroups
+              // Sequential mode: each group gets the next message in sequence
+              // poolLastIndex tracks where we left off from previous broadcasts
               messageData = await messageService.getMessageByIndex(accountId, poolLastIndex);
-              console.log(`[BROADCAST] Start: Pool sequential returned:`, messageData ? 'message found' : 'null');
-              // Note: sequential index is updated per group, not here
+              console.log(`[BROADCAST] Start: Pool sequential returned:`, messageData ? 'message found' : 'null', `(starting at index ${poolLastIndex})`);
             }
             
             if (messageData) {
@@ -1150,13 +1149,13 @@ class AutomationService {
                 console.log(`[BROADCAST] Cycle: ⚠️ Pool is empty or all messages inactive (rotate mode)`);
               }
             } else if (poolMode === 'sequential') {
-              // Sequential mode: per-group message selection happens in sendSingleMessageToAllGroups
-              // But we need a placeholder message to prevent fallback from skipping the send
-              const poolMessage = await messageService.getMessageByIndex(broadcast.accountId, 0);
+              // Sequential mode: each group gets the next message in sequence
+              // poolLastIndex tracks where we left off from previous broadcasts
+              const poolMessage = await messageService.getMessageByIndex(broadcast.accountId, poolLastIndex);
               if (poolMessage) {
                 messageToSend = poolMessage.text || null;
                 storedEntities = poolMessage.entities || null;
-                console.log(`[BROADCAST] Cycle: Sequential mode - placeholder message set, per-group selection in sendSingleMessageToAllGroups`);
+                console.log(`[BROADCAST] Cycle: Sequential mode - starting at index ${poolLastIndex}`);
               } else {
                 console.log(`[BROADCAST] Cycle: ⚠️ Pool is empty (sequential mode)`);
               }
@@ -2214,13 +2213,14 @@ class AutomationService {
             const poolMode = settings?.messagePoolMode || 'random';
             
             if (useMessagePool && poolMode === 'sequential') {
-              // Sequential mode: use different message for each group
-              const sequentialIndex = i; // Use group index
+              // Sequential mode: use different message for each group, continuing from last saved index
+              const poolLastIndex = settings?.messagePoolLastIndex || 0;
+              const sequentialIndex = poolLastIndex + i; // Offset by saved index so we continue from last broadcast
               const sequentialMessage = await messageService.getMessageByIndex(accountId, sequentialIndex);
               if (sequentialMessage) {
                 messageToUse = sequentialMessage.text;
                 entitiesToUse = sequentialMessage.entities;
-                console.log(`[BROADCAST] Sequential mode: Using message ${sequentialIndex} from pool for group "${groupName}"`);
+                console.log(`[BROADCAST] Sequential mode: Using pool message at offset ${sequentialIndex} for group "${groupName}"`);
               }
             }
             
@@ -3513,7 +3513,23 @@ class AutomationService {
       broadcastStatsService.recordStats(accountId, groupsToSend.length, successCount, errorCount).catch(err => {
         console.log(`[SILENT_FAIL] Broadcast stats recording failed: ${err.message}`);
       });
-      
+
+      // Update sequential mode index so next cycle continues from where we left off
+      try {
+        const seqSettings = broadcast.cachedSettings || await configService.getAccountSettings(accountId);
+        if (seqSettings?.useMessagePool && seqSettings?.messagePoolMode === 'sequential') {
+          const currentLastIndex = seqSettings?.messagePoolLastIndex || 0;
+          const newIndex = currentLastIndex + groupsToSend.length;
+          // Get pool size to wrap the index so it doesn't grow unbounded
+          const pool = await messageService.getMessagePool(accountId, false);
+          const wrappedIndex = pool.length > 0 ? newIndex % pool.length : 0;
+          await configService.updateMessagePoolLastIndex(accountId, wrappedIndex);
+          console.log(`[BROADCAST] Sequential mode: Updated pool index from ${currentLastIndex} to ${wrappedIndex} (sent to ${groupsToSend.length} groups, pool size: ${pool.length})`);
+        }
+      } catch (seqError) {
+        console.log(`[BROADCAST] ⚠️ Failed to update sequential pool index: ${seqError.message}`);
+      }
+
       // Log cycle completion to logger bot
       const loggerBotService = (await import('./loggerBotService.js')).default;
       loggerBotService.logCycleCompleted(userId, accountId, {
